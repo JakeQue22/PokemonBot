@@ -1,0 +1,123 @@
+"""Task manager – runs multiple monitors concurrently."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
+
+from pokemonbot.config import AppConfig, MonitorConfig
+from pokemonbot.monitor import get_monitor
+from pokemonbot.notifier import Alert, NotifierPipeline
+from pokemonbot.proxy import ProxyPool
+from pokemonbot.session import fetch
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TaskState:
+    """Runtime state for a single monitor task."""
+
+    config: MonitorConfig
+    last_status: str = ""
+    checks: int = 0
+    alerts: int = 0
+    errors: int = 0
+
+
+@dataclass
+class TaskManager:
+    """Orchestrates concurrent monitor tasks."""
+
+    app_config: AppConfig
+    proxy_pool: ProxyPool | None = None
+    notifier: NotifierPipeline = field(default_factory=NotifierPipeline)
+    _tasks: list[TaskState] = field(default_factory=list, init=False)
+    _stop_event: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+
+    def stop(self) -> None:
+        """Signal all tasks to stop after the current cycle."""
+        self._stop_event.set()
+
+    async def run(self) -> None:
+        """Start all configured monitor tasks and run until stopped."""
+        if not self.app_config.monitors:
+            logger.warning("No monitors configured – nothing to do.")
+            return
+
+        self._tasks = [TaskState(config=m) for m in self.app_config.monitors]
+
+        sem = asyncio.Semaphore(self.app_config.concurrency)
+        tasks = [
+            asyncio.create_task(self._run_task(state, sem))
+            for state in self._tasks
+        ]
+
+        # Wait until the stop event is set, then cancel running tasks.
+        await self._stop_event.wait()
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("All monitor tasks stopped.")
+
+    async def _run_task(self, state: TaskState, sem: asyncio.Semaphore) -> None:
+        monitor = get_monitor(state.config.site)
+        logger.info(
+            "Starting monitor [%s] for %s every %.1fs",
+            state.config.name or state.config.url,
+            state.config.url,
+            state.config.interval,
+        )
+
+        while not self._stop_event.is_set():
+            async with sem:
+                await self._check_once(state, monitor)
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=state.config.interval
+                )
+                break  # stop event was set
+            except asyncio.TimeoutError:
+                pass  # interval elapsed – continue
+
+    async def _check_once(self, state: TaskState, monitor: object) -> None:
+        state.checks += 1
+        try:
+            response = await fetch(
+                state.config.url,
+                proxy_pool=self.proxy_pool,
+                user_agents=self.app_config.user_agents,
+                timeout=self.app_config.request_timeout,
+                extra_headers=state.config.headers or None,
+            )
+        except ConnectionError as exc:
+            state.errors += 1
+            logger.error("Monitor [%s] connection error: %s", state.config.name, exc)
+            return
+
+        alert: Alert | None = monitor.parse(  # type: ignore[union-attr]
+            response,
+            url=state.config.url,
+            keywords=state.config.keywords,
+        )
+
+        if alert is None:
+            logger.debug(
+                "Monitor [%s] check #%d – no change", state.config.name, state.checks
+            )
+            return
+
+        # Only notify when status changes to avoid spam.
+        if alert.status != state.last_status:
+            state.last_status = alert.status
+            state.alerts += 1
+            await self.notifier.send(alert)
+        else:
+            logger.debug(
+                "Monitor [%s] status unchanged (%s)", state.config.name, alert.status
+            )
+
+    @property
+    def task_states(self) -> list[TaskState]:
+        return list(self._tasks)

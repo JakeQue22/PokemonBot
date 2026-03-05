@@ -1,0 +1,54 @@
+# PokemonBot Configuration
+# ========================
+
+# Proxy settings – load proxies from a text file (one per line).
+# Supported formats:
+#   http://host:port
+#   http://user:pass@host:port
+#   socks5://host:port
+#   host:port:user:pass
+proxies:
+  file: proxies.txt
+  rotate_on_error: true
+  test_url: https://httpbin.org/ip
+  timeout: 10.0
+
+# Notification settings
+notifier:
+  console: true
+  # Paste your Discord webhook URL to receive alerts in a channel:
+  discord_webhook_url: ""
+
+# Global settings
+concurrency: 10
+request_timeout: 30.0
+
+# Optional: override the default user-agent rotation pool
+# user_agents:
+#   - "Mozilla/5.0 (Windows NT 10.0; Win64; x64)..."
+
+# Monitor tasks – add as many URLs as you like.
+# Each monitor runs independently at its own interval.
+monitors:
+  - name: "Pokemon Center - Ascending Heroes"
+    url: "https://www.pokemoncenter.com/category/trading-card-game"
+    site: pokemoncenter
+    keywords:
+      - "Ascending Heroes"
+    interval: 10.0
+
+  # Uncomment to monitor a direct product page:
+  # - name: "Pokemon Center - Specific Product"
+  #   url: "https://www.pokemoncenter.com/product/..."
+  #   site: pokemoncenter
+  #   keywords: []
+  #   interval: 5.0
+
+  # Example: generic site monitor (works with any retailer)
+  # - name: "Target Pokemon Cards"
+  #   url: "https://www.target.com/c/pokemon-trading-cards/-/N-5xt8a"
+  #   site: generic
+  #   keywords:
+  #     - "pokemon"
+  #     - "ascending heroes"
+  #   interval: 15.0
