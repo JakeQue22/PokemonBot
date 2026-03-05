@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import json
 import logging
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -244,7 +243,6 @@ async def _api_test_discord(request: web.Request) -> web.Response:
             {"status": "error", "message": "Discord webhook URL is not configured"},
             status=400,
         )
-    import aiohttp as _aiohttp
 
     payload = {
         "embeds": [
@@ -256,12 +254,10 @@ async def _api_test_discord(request: web.Request) -> web.Response:
         ]
     }
     try:
+        import aiohttp as _aiohttp
+
         async with _aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                data=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-            ) as resp:
+            async with session.post(url, json=payload) as resp:
                 if resp.status < 400:
                     return web.json_response(
                         {"status": "ok", "message": "Test message sent to Discord"}
