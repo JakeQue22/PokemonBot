@@ -69,6 +69,27 @@ class TestEmailNotifier:
         assert result == "ok"
         mock_server.starttls.assert_called_once()
 
+    @patch("pokemonbot.notifier.smtplib.SMTP")
+    def test_send_test_email_no_ssl_no_auth_still_starttls(self, mock_smtp_cls):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
+        mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        cfg = EmailConfig(
+            enabled=True,
+            smtp_host="smtp.test.com",
+            smtp_port=587,
+            username="",
+            password="",
+            use_ssl=False,
+            from_address="bot@test.com",
+            to_addresses=["a@b.com"],
+        )
+        result = EmailNotifier.send_test_email(cfg)
+        assert result == "ok"
+        mock_server.starttls.assert_called_once()
+        mock_server.login.assert_not_called()
+
     @patch("pokemonbot.notifier.smtplib.SMTP_SSL")
     def test_send_test_email_failure(self, mock_smtp_cls):
         mock_smtp_cls.side_effect = Exception("Connection refused")

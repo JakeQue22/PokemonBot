@@ -141,8 +141,8 @@ class EmailNotifier:
             else:
                 with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port) as server:
                     server.ehlo()
+                    server.starttls()
                     if cfg.username:
-                        server.starttls()
                         server.login(cfg.username, cfg.password)
                     server.sendmail(cfg.from_address, cfg.to_addresses, msg.as_string())
             logger.info("Email alert sent to %s", cfg.to_addresses)
@@ -178,8 +178,8 @@ class EmailNotifier:
             else:
                 with smtplib.SMTP(config.smtp_host, config.smtp_port) as srv:
                     srv.ehlo()
+                    srv.starttls()
                     if config.username:
-                        srv.starttls()
                         srv.login(config.username, config.password)
                     srv.sendmail(config.from_address, config.to_addresses, msg.as_string())
             return "ok"
