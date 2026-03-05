@@ -16,7 +16,7 @@ from rich.table import Table
 from pokemonbot import __version__
 from pokemonbot.config import AppConfig, MonitorConfig, NotifierConfig, ProxyConfig, load_config
 from pokemonbot.monitor import MONITOR_REGISTRY
-from pokemonbot.notifier import ConsoleNotifier, DiscordWebhookNotifier, NotifierPipeline
+from pokemonbot.notifier import ConsoleNotifier, DiscordWebhookNotifier, EmailNotifier, NotifierPipeline
 from pokemonbot.proxy import ProxyPool, load_proxies
 from pokemonbot.tasks import TaskManager
 
@@ -72,6 +72,8 @@ def run(config_path: str, verbose: bool) -> None:
         notifier.add(ConsoleNotifier())
     if cfg.notifier.discord_webhook_url:
         notifier.add(DiscordWebhookNotifier(cfg.notifier.discord_webhook_url))
+    if cfg.email.enabled:
+        notifier.add(EmailNotifier(cfg.email))
 
     if not cfg.monitors:
         console.print("[yellow]No monitors configured in the config file.[/yellow]")
@@ -122,6 +124,17 @@ proxies:
 notifier:
   console: true
   discord_webhook_url: ""    # Paste your Discord webhook URL here
+
+# Email / SMTP notifications
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 465
+  username: ""
+  password: ""               # Use an app password for Gmail
+  use_ssl: true
+  from_address: ""
+  to_addresses: []
 
 # Global settings
 concurrency: 10
@@ -196,6 +209,17 @@ def check(url: str, site: str, keyword: tuple[str, ...], verbose: bool) -> None:
             console.print("[dim]No stock/queue signal detected.[/dim]")
 
     asyncio.run(_check())
+
+
+@main.command()
+@click.option("-c", "--config", "config_path", default="config.yaml", help="Path to config YAML.")
+@click.option("-H", "--host", default="0.0.0.0", help="Host to bind to.")
+@click.option("-p", "--port", default=3005, type=int, help="Port to listen on.")
+def web(config_path: str, host: str, port: int) -> None:
+    """Launch the web dashboard UI."""
+    from pokemonbot.web import run_web
+
+    run_web(config_path=config_path, host=host, port=port)
 
 
 if __name__ == "__main__":

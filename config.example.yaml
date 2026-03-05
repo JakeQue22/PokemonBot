@@ -19,6 +19,17 @@ notifier:
   # Paste your Discord webhook URL to receive alerts in a channel:
   discord_webhook_url: ""
 
+# Email / SMTP notification settings
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 465
+  username: ""
+  password: ""
+  use_ssl: true
+  from_address: ""
+  to_addresses: []
+
 # Global settings
 concurrency: 10
 request_timeout: 30.0

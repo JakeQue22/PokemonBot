@@ -42,12 +42,27 @@ class NotifierConfig:
 
 
 @dataclass
+class EmailConfig:
+    """SMTP email notification settings."""
+
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    username: str = ""
+    password: str = ""
+    use_ssl: bool = True
+    from_address: str = ""
+    to_addresses: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration."""
 
     proxies: ProxyConfig = field(default_factory=ProxyConfig)
     monitors: list[MonitorConfig] = field(default_factory=list)
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
     user_agents: list[str] = field(default_factory=lambda: _DEFAULT_USER_AGENTS.copy())
     concurrency: int = 10
     request_timeout: float = 30.0
@@ -88,6 +103,11 @@ def _build_notifier_config(raw: dict[str, Any]) -> NotifierConfig:
     return NotifierConfig(**{k: v for k, v in raw.items() if k in NotifierConfig.__dataclass_fields__})
 
 
+def _build_email_config(raw: dict[str, Any]) -> EmailConfig:
+    cfg = {k: v for k, v in raw.items() if k in EmailConfig.__dataclass_fields__}
+    return EmailConfig(**cfg)
+
+
 def load_config(path: str | Path) -> AppConfig:
     """Load and validate a YAML configuration file.
 
@@ -102,6 +122,7 @@ def load_config(path: str | Path) -> AppConfig:
     proxies = _build_proxy_config(raw.get("proxies", {}))
     monitors = [_build_monitor_config(m) for m in raw.get("monitors", [])]
     notifier = _build_notifier_config(raw.get("notifier", {}))
+    email = _build_email_config(raw.get("email", {}))
     user_agents = raw.get("user_agents", _DEFAULT_USER_AGENTS.copy())
     concurrency = int(raw.get("concurrency", 10))
     request_timeout = float(raw.get("request_timeout", 30.0))
@@ -110,6 +131,7 @@ def load_config(path: str | Path) -> AppConfig:
         proxies=proxies,
         monitors=monitors,
         notifier=notifier,
+        email=email,
         user_agents=user_agents,
         concurrency=concurrency,
         request_timeout=request_timeout,
