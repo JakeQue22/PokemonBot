@@ -237,3 +237,71 @@ class TestDashboard:
         assert data["status"] == "started"
         # Cleanup
         await client.post("/api/stop")
+
+    @pytest.mark.asyncio
+    async def test_monitors_list(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/monitors")
+        assert resp.status == 200
+        data = await resp.json()
+        assert len(data["monitors"]) == 1
+        assert data["monitors"][0]["name"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_monitors_add(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/monitors",
+            json={
+                "name": "ETB Monitor",
+                "url": "https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+                "site": "pokemoncenter",
+                "keywords": "elite, trainer",
+                "interval": 15,
+            },
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "added"
+        assert data["monitor"]["name"] == "ETB Monitor"
+
+        # Verify it shows in the list
+        resp = await client.get("/api/monitors")
+        data = await resp.json()
+        assert len(data["monitors"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_monitors_add_missing_url(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post("/api/monitors", json={"name": "No URL"})
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_monitors_delete(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        # Add a second monitor first
+        await client.post(
+            "/api/monitors",
+            json={"url": "https://example.com/new", "name": "new"},
+        )
+        resp = await client.get("/api/monitors")
+        data = await resp.json()
+        assert len(data["monitors"]) == 2
+
+        # Delete the second one (index 1)
+        resp = await client.delete("/api/monitors/1")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "removed"
+        assert data["monitor"]["name"] == "new"
+
+        # Verify list
+        resp = await client.get("/api/monitors")
+        data = await resp.json()
+        assert len(data["monitors"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_monitors_delete_out_of_range(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.delete("/api/monitors/99")
+        assert resp.status == 404

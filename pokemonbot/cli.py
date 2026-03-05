@@ -144,8 +144,14 @@ request_timeout: 30.0
 
 # Monitor tasks – add as many as you like
 monitors:
-  - name: "Pokemon Center - Ascending Heroes"
-    url: "https://www.pokemoncenter.com/category/trading-card-game"
+  - name: "Pokemon Center - Elite Trainer Box"
+    url: "https://www.pokemoncenter.com/en-gb/category/elite-trainer-box"
+    site: pokemoncenter
+    keywords: []
+    interval: 10.0
+
+  - name: "Pokemon Center - Trading Card Game"
+    url: "https://www.pokemoncenter.com/en-gb/category/trading-card-game"
     site: pokemoncenter
     keywords:
       - "Ascending Heroes"

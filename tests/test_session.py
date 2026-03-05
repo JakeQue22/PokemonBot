@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from pokemonbot.proxy import Proxy
-from pokemonbot.session import _random_user_agent, create_session
+from pokemonbot.session import _domain_overrides, _random_user_agent, create_session
 
 
 class TestRandomUserAgent:
@@ -42,3 +42,19 @@ class TestCreateSession:
         )
         assert session.headers.get("User-Agent") == "TestBot/1.0"
         await session.close()
+
+
+class TestDomainOverrides:
+    def test_pokemoncenter_headers(self):
+        headers, cookies = _domain_overrides(
+            "https://www.pokemoncenter.com/en-gb/category/elite-trainer-box"
+        )
+        assert "Accept-Language" in headers
+        assert "en-GB" in headers["Accept-Language"]
+        assert cookies.get("pokemon-website-language") == "en-gb"
+        assert cookies.get("pokemon-website-country") == "gb"
+
+    def test_unknown_domain_empty(self):
+        headers, cookies = _domain_overrides("https://example.com/page")
+        assert headers == {}
+        assert cookies == {}

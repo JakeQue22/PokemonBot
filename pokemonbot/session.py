@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
@@ -12,6 +13,22 @@ from aiohttp_socks import ProxyConnector
 from pokemonbot.proxy import Proxy, ProxyPool
 
 logger = logging.getLogger(__name__)
+
+
+# Per-domain cookie / header overrides.  When a URL matches one of these
+# domains the extra headers and cookies are injected automatically so
+# that locale selection is handled without requiring a captcha click.
+_DOMAIN_OVERRIDES: dict[str, dict[str, Any]] = {
+    "www.pokemoncenter.com": {
+        "headers": {
+            "Accept-Language": "en-GB,en;q=0.9",
+        },
+        "cookies": {
+            "pokemon-website-language": "en-gb",
+            "pokemon-website-country": "gb",
+        },
+    },
+}
 
 
 def _random_user_agent(user_agents: list[str]) -> str:
@@ -24,12 +41,20 @@ def _build_connector(proxy: Proxy | None) -> aiohttp.BaseConnector:
     return ProxyConnector.from_url(proxy.url, ssl=False)
 
 
+def _domain_overrides(url: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ``(extra_headers, cookies)`` for *url* based on domain rules."""
+    host = urlparse(url).hostname or ""
+    overrides = _DOMAIN_OVERRIDES.get(host, {})
+    return overrides.get("headers", {}), overrides.get("cookies", {})
+
+
 async def create_session(
     *,
     proxy: Proxy | None = None,
     user_agents: list[str] | None = None,
     timeout: float = 30.0,
     headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
 ) -> aiohttp.ClientSession:
     """Create an ``aiohttp.ClientSession`` pre-configured with an optional proxy."""
     connector = _build_connector(proxy)
@@ -49,6 +74,7 @@ async def create_session(
         connector=connector,
         timeout=aiohttp.ClientTimeout(total=timeout),
         headers=default_headers,
+        cookies=cookies or None,
     )
 
 
@@ -65,6 +91,10 @@ async def fetch(
 
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``.
     """
+    # Merge domain-specific overrides with caller-supplied headers.
+    domain_headers, domain_cookies = _domain_overrides(url)
+    merged_headers = {**domain_headers, **(extra_headers or {})}
+
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
         proxy = proxy_pool.next() if proxy_pool else None
@@ -72,7 +102,8 @@ async def fetch(
             proxy=proxy,
             user_agents=user_agents,
             timeout=timeout,
-            headers=extra_headers,
+            headers=merged_headers or None,
+            cookies=domain_cookies or None,
         )
         try:
             async with session:

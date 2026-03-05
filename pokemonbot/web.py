@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from pokemonbot import __version__
-from pokemonbot.config import AppConfig, EmailConfig, load_config
+from pokemonbot.config import AppConfig, EmailConfig, MonitorConfig, load_config
 from pokemonbot.notifier import (
     ConsoleNotifier,
     DiscordWebhookNotifier,
@@ -297,6 +297,71 @@ async def _api_config(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+# -- Monitor CRUD endpoints -----------------------------------------------
+
+def _monitor_to_dict(m: MonitorConfig) -> dict[str, Any]:
+    return {
+        "name": m.name,
+        "url": m.url,
+        "site": m.site,
+        "keywords": m.keywords,
+        "interval": m.interval,
+    }
+
+
+async def _api_monitors_list(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    monitors = [_monitor_to_dict(m) for m in state.config.monitors]
+    return web.json_response({"monitors": monitors})
+
+
+async def _api_monitors_add(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    url = (body.get("url") or "").strip()
+    if not url:
+        return web.json_response({"error": "URL is required"}, status=400)
+
+    name = (body.get("name") or "").strip() or url
+    site = (body.get("site") or "pokemoncenter").strip()
+    keywords_raw = body.get("keywords", [])
+    if isinstance(keywords_raw, str):
+        keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
+    else:
+        keywords = list(keywords_raw)
+    interval = float(body.get("interval", 10.0))
+
+    monitor = MonitorConfig(
+        name=name, url=url, site=site, keywords=keywords, interval=interval,
+    )
+    state.config.monitors.append(monitor)
+    logger.info("Monitor added: %s → %s", name, url)
+    return web.json_response({
+        "status": "added",
+        "monitor": _monitor_to_dict(monitor),
+        "index": len(state.config.monitors) - 1,
+    })
+
+
+async def _api_monitors_delete(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    try:
+        idx = int(request.match_info["index"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid index"}, status=400)
+
+    if idx < 0 or idx >= len(state.config.monitors):
+        return web.json_response({"error": "Index out of range"}, status=404)
+
+    removed = state.config.monitors.pop(idx)
+    logger.info("Monitor removed: %s → %s", removed.name, removed.url)
+    return web.json_response({"status": "removed", "monitor": _monitor_to_dict(removed)})
+
+
 # ---------------------------------------------------------------------------
 # Embedded HTML dashboard
 # ---------------------------------------------------------------------------
@@ -468,11 +533,31 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 
     <!-- ============ MONITORS PAGE ============ -->
     <div class="page" id="page-monitors">
+      <!-- Add Monitor form -->
+      <div class="card">
+        <h2>Add Monitor</h2>
+        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.7rem">Add a new URL to monitor. The bot must be restarted for new monitors to take effect.</p>
+        <div class="form-grid">
+          <label>Name</label>        <input id="mon-name" placeholder="e.g. Elite Trainer Box">
+          <label>URL</label>         <input id="mon-url" placeholder="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box">
+          <label>Site</label>
+          <select id="mon-site">
+            <option value="pokemoncenter">pokemoncenter</option>
+            <option value="generic">generic</option>
+          </select>
+          <label>Keywords</label>    <input id="mon-keywords" placeholder="comma-separated (optional)">
+          <label>Interval (s)</label><input id="mon-interval" type="number" value="10" min="1" step="1">
+        </div>
+        <div class="controls" style="margin-top:.8rem">
+          <button class="btn btn-accent" onclick="addMonitor()">➕ Add Monitor</button>
+        </div>
+      </div>
+
+      <!-- Monitor table -->
       <div class="card">
         <h2>Configured Monitors</h2>
-        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.7rem">These monitors are loaded from <code>config.yaml</code>. Restart the bot after editing the config file to apply changes.</p>
         <table class="tbl" id="monitors-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th><th></th></tr></thead>
           <tbody id="monitors-body"></tbody>
         </table>
         <div id="monitors-empty" style="text-align:center;padding:2rem;color:var(--muted);font-size:.85rem">No monitors configured.</div>
@@ -631,29 +716,58 @@ function updateMonitorsPage(d){
   const empty=document.getElementById('monitors-empty');
   const taskMap={};
   if(d.tasks)d.tasks.forEach(t=>taskMap[t.name]=t);
-  /* We merge config monitors with runtime stats */
-  /* config monitors were loaded on /api/config – use cached if available */
   const list=window._cfgMonitors||[];
   if(!list.length&&d.tasks&&d.tasks.length){
-    /* Fallback: just use runtime tasks */
     empty.style.display='none';
-    body.innerHTML=d.tasks.map(t=>{
+    body.innerHTML=d.tasks.map((t,i)=>{
       let badge='badge-muted';if(t.last_status==='in_stock')badge='badge-green';else if(t.last_status==='queue_active')badge='badge-yellow';
       return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.url)}</td>`+
-      `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td></tr>`;
+      `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
+      `<td><button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     return;
   }
   if(!list.length){empty.style.display='';body.innerHTML='';return;}
   empty.style.display='none';
-  body.innerHTML=list.map(m=>{
+  body.innerHTML=list.map((m,i)=>{
     const rt=taskMap[m.name]||{};
     let badge='badge-muted';const st=rt.last_status||'';
     if(st==='in_stock')badge='badge-green';else if(st==='queue_active')badge='badge-yellow';
     return `<tr><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.url)}</td>`+
     `<td>${esc(m.site)}</td><td>${esc((m.keywords||[]).join(', ')||'–')}</td><td>${m.interval}s</td>`+
-    `<td>${rt.checks??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td></tr>`;
+    `<td>${rt.checks??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td>`+
+    `<td><button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
   }).join('');
+}
+
+/* ---- Monitor management ---- */
+async function addMonitor(){
+  const url=document.getElementById('mon-url').value.trim();
+  if(!url){toast('URL is required',false);return;}
+  const body={
+    name:document.getElementById('mon-name').value.trim()||url,
+    url:url,
+    site:document.getElementById('mon-site').value,
+    keywords:document.getElementById('mon-keywords').value,
+    interval:parseFloat(document.getElementById('mon-interval').value)||10
+  };
+  const r=await fetch(API+'/api/monitors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(r.ok){
+    toast('Monitor added! Restart the bot for changes to take effect.',true);
+    document.getElementById('mon-name').value='';
+    document.getElementById('mon-url').value='';
+    document.getElementById('mon-keywords').value='';
+    document.getElementById('mon-interval').value='10';
+    loadConfig();fetchStatus();
+  }else{toast(d.error||'Failed to add',false);}
+}
+async function removeMonitor(idx){
+  if(!confirm('Remove this monitor?'))return;
+  const r=await fetch(API+'/api/monitors/'+idx,{method:'DELETE'});
+  const d=await r.json();
+  if(r.ok){toast('Monitor removed. Restart the bot for changes to take effect.',true);loadConfig();fetchStatus();}
+  else toast(d.error||'Failed to remove',false);
 }
 
 /* ---- Logs ---- */
@@ -808,6 +922,9 @@ def create_web_app(config_path: str = "config.yaml") -> web.Application:
     app.router.add_post("/api/discord-settings", _api_discord_settings_post)
     app.router.add_post("/api/test-discord", _api_test_discord)
     app.router.add_get("/api/config", _api_config)
+    app.router.add_get("/api/monitors", _api_monitors_list)
+    app.router.add_post("/api/monitors", _api_monitors_add)
+    app.router.add_delete("/api/monitors/{index}", _api_monitors_delete)
 
     return app
 
