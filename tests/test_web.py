@@ -20,6 +20,9 @@ monitors:
     site: generic
     keywords: []
     interval: 5.0
+notifier:
+  console: true
+  discord_webhook_url: ""
 email:
   enabled: false
   smtp_host: ""
@@ -38,6 +41,27 @@ email:
 def web_app_no_monitors(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("monitors: []\n")
+    return create_web_app(config_path=str(cfg))
+
+
+@pytest.fixture
+def web_app_proxy_dir(tmp_path):
+    """Config that points to a proxies.txt that is actually a directory."""
+    proxy_dir = tmp_path / "proxies.txt"
+    proxy_dir.mkdir()
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"""\
+proxies:
+  file: {proxy_dir}
+monitors:
+  - name: test
+    url: https://example.com
+    site: generic
+    keywords: []
+    interval: 5.0
+"""
+    )
     return create_web_app(config_path=str(cfg))
 
 
@@ -111,6 +135,14 @@ class TestDashboard:
         assert isinstance(data["lines"], list)
 
     @pytest.mark.asyncio
+    async def test_api_clear_logs(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post("/api/logs/clear")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "cleared"
+
+    @pytest.mark.asyncio
     async def test_email_settings_roundtrip(self, web_app, aiohttp_client):
         client = await aiohttp_client(web_app)
 
@@ -154,3 +186,54 @@ class TestDashboard:
         assert resp.status == 400
         data = await resp.json()
         assert data["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_discord_settings_roundtrip(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+
+        # GET defaults
+        resp = await client.get("/api/discord-settings")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["discord_webhook_url"] == ""
+
+        # POST update
+        resp = await client.post(
+            "/api/discord-settings",
+            json={"discord_webhook_url": "https://discord.com/api/webhooks/test/token"},
+        )
+        assert resp.status == 200
+
+        # GET updated
+        resp = await client.get("/api/discord-settings")
+        data = await resp.json()
+        assert data["discord_webhook_url"] == "https://discord.com/api/webhooks/test/token"
+
+    @pytest.mark.asyncio
+    async def test_test_discord_no_url(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post("/api/test-discord")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_api_config(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/config")
+        assert resp.status == 200
+        data = await resp.json()
+        assert "monitors" in data
+        assert isinstance(data["monitors"], list)
+        assert data["monitors"][0]["name"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_start_with_proxy_directory(self, web_app_proxy_dir, aiohttp_client):
+        """Starting should not crash when proxies.txt is a directory (Docker volume mount)."""
+        client = await aiohttp_client(web_app_proxy_dir)
+        resp = await client.post("/api/start")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "started"
+        # Cleanup
+        await client.post("/api/stop")

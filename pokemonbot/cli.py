@@ -58,11 +58,13 @@ def run(config_path: str, verbose: bool) -> None:
     # Load proxies
     proxy_pool: ProxyPool | None = None
     proxy_path = Path(cfg.proxies.file)
-    if proxy_path.exists():
+    if proxy_path.is_file():
         proxies = load_proxies(proxy_path)
         if proxies:
             proxy_pool = ProxyPool(proxies)
             logger.info("Loaded %d proxies from %s", proxy_pool.size, proxy_path)
+    elif proxy_path.exists():
+        logger.warning("Proxy path %s exists but is not a file – skipping.", proxy_path)
     else:
         logger.info("No proxy file found at %s – running without proxies.", proxy_path)
 
