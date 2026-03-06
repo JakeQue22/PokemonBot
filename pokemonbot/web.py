@@ -549,10 +549,10 @@ async def _api_proxies_fetch_public(request: web.Request) -> web.Response:
         new_proxies = [p for p in proxies if p.url not in existing_urls]
         merged = existing + new_proxies
         save_proxies(merged, proxy_path)
-    except Exception as exc:
+    except OSError as exc:
         logger.exception("Failed to save fetched proxies")
         return web.json_response(
-            {"error": f"Proxies fetched but could not be saved: {exc}"}, status=500
+            {"error": "Proxies fetched but could not be saved to disk"}, status=500
         )
 
     logger.info("Public proxies fetched: %d new, %d total", len(new_proxies), len(merged))
@@ -1252,7 +1252,7 @@ async function fetchPublicProxies(){
     const text=await r.text();
     let d;
     try{d=JSON.parse(text);}catch(pe){
-      toast('Server error (HTTP '+r.status+'): '+text.substring(0,200),false);return;
+      toast('Server error (HTTP '+r.status+'): '+(text.length>200?text.substring(0,200)+'…':text),false);return;
     }
     if(r.ok){toast('✅ Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
     else toast(d.error||'Failed to fetch public proxies',false);
