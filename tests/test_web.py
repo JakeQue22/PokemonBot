@@ -496,3 +496,84 @@ class TestDashboard:
             assert data["status"] == "ok"
             assert data["fetched"] == 2
             assert data["total"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_monitor_add_persists_to_disk(self, web_app, aiohttp_client):
+        """Adding a monitor should write the change to config.yaml."""
+        client = await aiohttp_client(web_app)
+        config_path = web_app["state"].config_path
+
+        resp = await client.post(
+            "/api/monitors",
+            json={"name": "Persisted", "url": "https://persist.example.com", "site": "generic", "interval": 7},
+        )
+        assert resp.status == 200
+
+        from pokemonbot.config import load_config
+        reloaded = load_config(config_path)
+        names = [m.name for m in reloaded.monitors]
+        assert "Persisted" in names
+
+    @pytest.mark.asyncio
+    async def test_monitor_delete_persists_to_disk(self, web_app, aiohttp_client):
+        """Deleting a monitor should write the change to config.yaml."""
+        client = await aiohttp_client(web_app)
+        config_path = web_app["state"].config_path
+
+        resp = await client.delete("/api/monitors/0")
+        assert resp.status == 200
+
+        from pokemonbot.config import load_config
+        reloaded = load_config(config_path)
+        assert len(reloaded.monitors) == 0
+
+    @pytest.mark.asyncio
+    async def test_general_settings_persist_to_disk(self, web_app, aiohttp_client):
+        """Changing general settings should persist them to config.yaml."""
+        client = await aiohttp_client(web_app)
+        config_path = web_app["state"].config_path
+
+        resp = await client.post(
+            "/api/general-settings",
+            json={"portal_name": "TestBot", "concurrency": 42},
+        )
+        assert resp.status == 200
+
+        from pokemonbot.config import load_config
+        reloaded = load_config(config_path)
+        assert reloaded.portal_name == "TestBot"
+        assert reloaded.concurrency == 42
+
+    @pytest.mark.asyncio
+    async def test_discord_settings_persist_to_disk(self, web_app, aiohttp_client):
+        """Changing discord settings should persist them to config.yaml."""
+        client = await aiohttp_client(web_app)
+        config_path = web_app["state"].config_path
+
+        resp = await client.post(
+            "/api/discord-settings",
+            json={"discord_webhook_url": "https://discord.com/api/webhooks/123/abc"},
+        )
+        assert resp.status == 200
+
+        from pokemonbot.config import load_config
+        reloaded = load_config(config_path)
+        assert reloaded.notifier.discord_webhook_url == "https://discord.com/api/webhooks/123/abc"
+
+    @pytest.mark.asyncio
+    async def test_email_settings_persist_to_disk(self, web_app, aiohttp_client):
+        """Changing email settings should persist them to config.yaml."""
+        client = await aiohttp_client(web_app)
+        config_path = web_app["state"].config_path
+
+        resp = await client.post(
+            "/api/email-settings",
+            json={"enabled": True, "smtp_host": "smtp.test.com", "smtp_port": 587},
+        )
+        assert resp.status == 200
+
+        from pokemonbot.config import load_config
+        reloaded = load_config(config_path)
+        assert reloaded.email.enabled is True
+        assert reloaded.email.smtp_host == "smtp.test.com"
+        assert reloaded.email.smtp_port == 587

@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from pokemonbot import __version__
-from pokemonbot.config import AppConfig, EmailConfig, MonitorConfig, load_config
+from pokemonbot.config import AppConfig, EmailConfig, MonitorConfig, load_config, save_config
 from pokemonbot.notifier import (
     ConsoleNotifier,
     DiscordWebhookNotifier,
@@ -72,6 +72,14 @@ class _AppState:
     manager: TaskManager | None = None
     manager_task: asyncio.Task[None] | None = None
     running: bool = False
+
+
+def _save_state(state: _AppState) -> None:
+    """Persist the current in-memory config to the YAML file on disk."""
+    try:
+        save_config(state.config, state.config_path)
+    except OSError:
+        logger.exception("Failed to persist configuration to %s", state.config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +217,7 @@ async def _api_email_settings_post(request: web.Request) -> web.Response:
         else:
             cfg.to_addresses = list(val)
 
+    _save_state(state)
     return web.json_response({"status": "updated"})
 
 
@@ -239,6 +248,7 @@ async def _api_discord_settings_post(request: web.Request) -> web.Response:
 
     if "discord_webhook_url" in body:
         state.config.notifier.discord_webhook_url = body["discord_webhook_url"]
+    _save_state(state)
     return web.json_response({"status": "updated"})
 
 
@@ -346,6 +356,7 @@ async def _api_monitors_add(request: web.Request) -> web.Response:
         name=name, url=url, site=site, keywords=keywords, interval=interval,
     )
     state.config.monitors.append(monitor)
+    _save_state(state)
     logger.info("Monitor added: %s → %s", name, url)
     return web.json_response({
         "status": "added",
@@ -365,6 +376,7 @@ async def _api_monitors_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "Index out of range"}, status=404)
 
     removed = state.config.monitors.pop(idx)
+    _save_state(state)
     logger.info("Monitor removed: %s → %s", removed.name, removed.url)
     return web.json_response({"status": "removed", "monitor": _monitor_to_dict(removed)})
 
@@ -403,6 +415,7 @@ async def _api_monitors_update(request: web.Request) -> web.Response:
     if "interval" in body:
         m.interval = max(1.0, float(body["interval"]))
 
+    _save_state(state)
     logger.info("Monitor updated [%d]: %s → %s", idx, m.name, m.url)
     return web.json_response({"status": "updated", "monitor": _monitor_to_dict(m)})
 
@@ -526,6 +539,7 @@ async def _api_general_settings_post(request: web.Request) -> web.Response:
     if "base_url" in body:
         val = str(body["base_url"]).strip().rstrip("/")
         state.config.base_url = val
+    _save_state(state)
     return web.json_response({"status": "updated"})
 
 

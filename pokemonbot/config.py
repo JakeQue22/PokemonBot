@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -140,3 +144,84 @@ def load_config(path: str | Path) -> AppConfig:
         portal_name=str(raw.get("portal_name", "PokemonBot")),
         base_url=str(raw.get("base_url", "")),
     )
+
+
+def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Convert an ``AppConfig`` to a plain dict suitable for YAML serialisation.
+
+    Omits keys whose values match the dataclass defaults to keep the file
+    compact and readable.
+    """
+    data: dict[str, Any] = {}
+
+    # Proxies
+    proxy = asdict(cfg.proxies)
+    defaults = asdict(ProxyConfig())
+    proxy_out = {k: v for k, v in proxy.items() if v != defaults.get(k)}
+    if proxy_out:
+        data["proxies"] = proxy_out
+
+    # Notifier
+    notif = asdict(cfg.notifier)
+    defaults_n = asdict(NotifierConfig())
+    notif_out = {k: v for k, v in notif.items() if v != defaults_n.get(k)}
+    if notif_out:
+        data["notifier"] = notif_out
+
+    # Email
+    email = asdict(cfg.email)
+    defaults_e = asdict(EmailConfig())
+    email_out = {k: v for k, v in email.items() if v != defaults_e.get(k)}
+    if email_out:
+        data["email"] = email_out
+
+    # Scalar settings – only write non-default values
+    if cfg.concurrency != 10:
+        data["concurrency"] = cfg.concurrency
+    if cfg.request_timeout != 30.0:
+        data["request_timeout"] = cfg.request_timeout
+    if cfg.portal_name and cfg.portal_name != "PokemonBot":
+        data["portal_name"] = cfg.portal_name
+    if cfg.base_url:
+        data["base_url"] = cfg.base_url
+    if cfg.user_agents != _DEFAULT_USER_AGENTS:
+        data["user_agents"] = cfg.user_agents
+
+    # Monitors
+    monitors = []
+    for m in cfg.monitors:
+        md: dict[str, Any] = {"name": m.name, "url": m.url, "site": m.site}
+        if m.keywords:
+            md["keywords"] = m.keywords
+        md["interval"] = m.interval
+        if m.headers:
+            md["headers"] = m.headers
+        monitors.append(md)
+    data["monitors"] = monitors
+
+    return data
+
+
+def save_config(cfg: AppConfig, path: str | Path) -> None:
+    """Persist *cfg* to a YAML file at *path* using an atomic write."""
+    dest = Path(path)
+    data = _config_to_dict(cfg)
+    content = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    # Atomic write: temp file in the same directory, then rename.
+    fd, tmp = tempfile.mkstemp(
+        dir=str(dest.parent), prefix=".config_", suffix=".tmp",
+    )
+    try:
+        os.write(fd, content.encode())
+    finally:
+        os.close(fd)
+    try:
+        os.replace(tmp, str(dest))
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    logger.info("Configuration saved to %s", dest)
