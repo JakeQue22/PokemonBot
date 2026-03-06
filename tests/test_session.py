@@ -111,6 +111,15 @@ class TestCurlCffiIntegration:
         for b in _IMPERSONATE_BROWSERS:
             assert b.startswith("chrome")
 
+    def test_impersonate_browsers_supported(self):
+        """Every configured browser target must be recognised by curl_cffi."""
+        from curl_cffi.requests import BrowserType
+
+        for browser in _IMPERSONATE_BROWSERS:
+            assert hasattr(BrowserType, browser), (
+                f"{browser!r} is not supported by curl_cffi {__import__('curl_cffi').__version__}"
+            )
+
 
 class TestFetchUsesCurlCffi:
     @pytest.mark.asyncio

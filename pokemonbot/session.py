@@ -30,8 +30,8 @@ except ImportError:  # pragma: no cover
 # ``"chrome131"`` which reproduce the *exact* TLS/JA3/HTTP2 fingerprint
 # of that browser, defeating Cloudflare & Akamai bot detection.
 _IMPERSONATE_BROWSERS: list[str] = [
+    "chrome136",
     "chrome131",
-    "chrome130",
     "chrome124",
 ]
 
