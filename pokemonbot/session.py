@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import ssl
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,6 +14,19 @@ from aiohttp_socks import ProxyConnector
 from pokemonbot.proxy import Proxy, ProxyPool
 
 logger = logging.getLogger(__name__)
+
+
+def _default_ssl_context() -> ssl.SSLContext:
+    """Return an SSL context that behaves like a real browser.
+
+    Uses the system CA bundle for certificate verification so that CDN/WAF
+    servers (Akamai, Cloudflare, etc.) see a normal TLS handshake instead
+    of the ``ssl=False`` fingerprint that many bot-detection systems flag.
+    """
+    ctx = ssl.create_default_context()
+    # Broad protocol/cipher support matching modern browsers
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
 
 
 # Per-domain cookie / header overrides.  When a URL matches one of these
@@ -36,9 +50,10 @@ def _random_user_agent(user_agents: list[str]) -> str:
 
 
 def _build_connector(proxy: Proxy | None) -> aiohttp.BaseConnector:
+    ssl_ctx = _default_ssl_context()
     if proxy is None:
-        return aiohttp.TCPConnector(ssl=False)
-    return ProxyConnector.from_url(proxy.url, ssl=False)
+        return aiohttp.TCPConnector(ssl=ssl_ctx)
+    return ProxyConnector.from_url(proxy.url, ssl=ssl_ctx)
 
 
 def _get_domain_overrides(url: str) -> tuple[dict[str, str], dict[str, str]]:
@@ -60,10 +75,15 @@ async def create_session(
     connector = _build_connector(proxy)
     ua = _random_user_agent(user_agents or [])
     default_headers: dict[str, str] = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
     }
     if ua:
         default_headers["User-Agent"] = ua
