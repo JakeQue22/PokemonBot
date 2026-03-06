@@ -506,6 +506,7 @@ async def _api_general_settings_get(request: web.Request) -> web.Response:
         "portal_name": state.config.portal_name,
         "concurrency": state.config.concurrency,
         "request_timeout": state.config.request_timeout,
+        "base_url": state.config.base_url,
     })
 
 
@@ -522,6 +523,9 @@ async def _api_general_settings_post(request: web.Request) -> web.Response:
         state.config.concurrency = max(1, int(body["concurrency"]))
     if "request_timeout" in body:
         state.config.request_timeout = max(1.0, float(body["request_timeout"]))
+    if "base_url" in body:
+        val = str(body["base_url"]).strip().rstrip("/")
+        state.config.base_url = val
     return web.json_response({"status": "updated"})
 
 
@@ -830,7 +834,12 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <label>Portal Name</label>    <input id="gen-name" placeholder="PokemonBot">
             <label>Concurrency</label>    <input id="gen-concurrency" type="number" value="10" min="1">
             <label>Request Timeout (s)</label> <input id="gen-timeout" type="number" value="30" min="1" step="1">
+            <label>Base URL (external SSL)</label> <input id="gen-base-url" placeholder="https://mybot.example.com">
           </div>
+          <p style="color:var(--text-muted);font-size:.85rem;margin:.4rem 0 0">
+            Set the public base URL if you access this dashboard through a reverse proxy / external SSL.
+            Leave empty for default. Example: <code>https://mybot.example.com</code>
+          </p>
           <div class="controls" style="margin-top:.8rem">
             <button class="btn btn-accent" onclick="saveGeneral()">💾 Save</button>
           </div>
@@ -930,7 +939,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 <div class="toast" id="toast"></div>
 
 <script>
-const API='';
+const API='{{BASE_URL}}';
 let allLogs=[];
 
 /* ---- Utility ---- */
@@ -1181,16 +1190,18 @@ async function loadGeneral(){
     document.getElementById('gen-name').value=d.portal_name||'';
     document.getElementById('gen-concurrency').value=d.concurrency||10;
     document.getElementById('gen-timeout').value=d.request_timeout||30;
+    document.getElementById('gen-base-url').value=d.base_url||'';
   }catch(e){}
 }
 async function saveGeneral(){
   const body={
     portal_name:document.getElementById('gen-name').value.trim(),
     concurrency:parseInt(document.getElementById('gen-concurrency').value)||10,
-    request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30
+    request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30,
+    base_url:document.getElementById('gen-base-url').value.trim()
   };
   const r=await fetch(API+'/api/general-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(r.ok)toast('General settings saved. Reload the page to see the new name.',true);else toast('Failed to save',false);
+  if(r.ok)toast('General settings saved. Reload the page to see changes.',true);else toast('Failed to save',false);
 }
 
 /* ---- Proxy management ---- */
@@ -1280,7 +1291,8 @@ setInterval(()=>{fetchStatus();fetchLogs();},2000);
 async def _index(request: web.Request) -> web.Response:
     state: _AppState = request.app["state"]
     name = html.escape(state.config.portal_name or "PokemonBot")
-    page = _DASHBOARD_HTML.replace("{{PORTAL_NAME}}", name)
+    base = html.escape(state.config.base_url.rstrip("/")) if state.config.base_url else ""
+    page = _DASHBOARD_HTML.replace("{{PORTAL_NAME}}", name).replace("{{BASE_URL}}", base)
     return web.Response(text=page, content_type="text/html")
 
 
