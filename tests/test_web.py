@@ -603,6 +603,15 @@ class TestDashboard:
         assert "<th>Successes</th>" in text
 
     @pytest.mark.asyncio
+    async def test_index_contains_proxy_successes_card(self, web_app, aiohttp_client):
+        """Proxy list should have a Total Successes summary card."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert 'id="px-successes"' in text
+        assert "Total Successes" in text
+
+    @pytest.mark.asyncio
     async def test_general_settings_max_retries_roundtrip(self, web_app, aiohttp_client):
         client = await aiohttp_client(web_app)
         resp = await client.post(
@@ -627,3 +636,20 @@ class TestDashboard:
         resp = await client.get("/api/general-settings")
         data = await resp.json()
         assert data["max_retries"] == 1
+
+    @pytest.mark.asyncio
+    async def test_index_contains_log_color_classes(self, web_app, aiohttp_client):
+        """HTML should contain CSS classes for success and error log coloring."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert ".log-success" in text
+        assert ".log-error" in text
+
+    @pytest.mark.asyncio
+    async def test_index_contains_logclass_function(self, web_app, aiohttp_client):
+        """The logClass JS function should exist for content-based coloring."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert "function logClass" in text

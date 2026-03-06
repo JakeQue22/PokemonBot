@@ -668,6 +668,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
   font-family:'Cascadia Code','Fira Code',monospace;font-size:.76rem;height:420px;overflow-y:auto;white-space:pre-wrap;color:#b0b8c8;line-height:1.45}
 .log-line{padding:1px 0}.log-line:hover{background:rgba(108,99,255,.06)}
 .log-line .ts{color:#666}.log-line .lvl-INFO{color:#2ecc71}.log-line .lvl-WARNING{color:#f1c40f}.log-line .lvl-ERROR{color:#ff6b6b}.log-line .lvl-DEBUG{color:#888}
+.log-line .log-success{color:#2ecc71}.log-line .log-error{color:#ff6b6b}
 
 /* ---- Forms ---- */
 .form-grid{display:grid;grid-template-columns:140px 1fr;gap:.45rem .8rem;align-items:center}
@@ -875,6 +876,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           <div class="stats" style="margin-bottom:.8rem">
             <div class="stat purple"><div class="num" id="px-total">0</div><div class="lbl">Total Proxies</div></div>
             <div class="stat green"><div class="num" id="px-requests">0</div><div class="lbl">Total Requests</div></div>
+            <div class="stat green"><div class="num" id="px-successes">0</div><div class="lbl">Total Successes</div></div>
             <div class="stat red"><div class="num" id="px-failures">0</div><div class="lbl">Total Failures</div></div>
           </div>
 
@@ -1109,6 +1111,17 @@ async function saveEditMonitor(){
 }
 
 /* ---- Logs ---- */
+const _ERR_RE=/Access denied|failed|\b403\b|connection error|\bdenied\b|timed?\s*out/i;
+const _OK_RE=/\bOK\b|check #\d+ OK|started|stopped|saved|added|removed|updated|fetched|sent/i;
+function logClass(l){
+  if(l.includes('[ERROR]'))return 'log-error';
+  if(_ERR_RE.test(l))return 'log-error';
+  if(l.includes('[WARNING]'))return 'lvl-WARNING';
+  if(_OK_RE.test(l))return 'log-success';
+  if(l.includes('[DEBUG]'))return 'lvl-DEBUG';
+  if(l.includes('[INFO]'))return 'lvl-INFO';
+  return '';
+}
 async function fetchLogs(){
   try{
     const r=await fetch(API+'/api/logs');const d=await r.json();
@@ -1116,7 +1129,7 @@ async function fetchLogs(){
     renderLogs();
     /* Dash recent logs – last 20 */
     const box=document.getElementById('dash-log-box');
-    box.textContent=allLogs.slice(-20).join('\n');
+    box.innerHTML=allLogs.slice(-20).map(l=>`<div class="log-line"><span class="${logClass(l)}">${esc(l)}</span></div>`).join('');
     box.scrollTop=box.scrollHeight;
   }catch(e){}
 }
@@ -1129,19 +1142,14 @@ function renderLogs(){
   if(search)lines=lines.filter(l=>l.toLowerCase().includes(search));
   /* colour the lines */
   box.innerHTML=lines.map(l=>{
-    let cls='';
-    if(l.includes('[ERROR]'))cls='lvl-ERROR';
-    else if(l.includes('[WARNING]'))cls='lvl-WARNING';
-    else if(l.includes('[DEBUG]'))cls='lvl-DEBUG';
-    else if(l.includes('[INFO]'))cls='lvl-INFO';
-    return `<div class="log-line"><span class="${cls}">${esc(l)}</span></div>`;
+    return `<div class="log-line"><span class="${logClass(l)}">${esc(l)}</span></div>`;
   }).join('');
   if(document.getElementById('log-autoscroll').checked)box.scrollTop=box.scrollHeight;
 }
 async function clearLogs(){
   await fetch(API+'/api/logs/clear',{method:'POST'});
   allLogs=[];renderLogs();
-  document.getElementById('dash-log-box').textContent='';
+  document.getElementById('dash-log-box').innerHTML='';
   toast('Logs cleared',true);
 }
 function copyLast20Logs(){
@@ -1236,10 +1244,11 @@ async function refreshProxies(){
   try{
     const r=await fetch(API+'/api/proxies');const d=await r.json();
     const list=d.proxies||[];
-    let totalReq=0,totalFail=0;
-    list.forEach(p=>{totalReq+=p.requests||0;totalFail+=p.failures||0;});
+    let totalReq=0,totalFail=0,totalSucc=0;
+    list.forEach(p=>{totalReq+=p.requests||0;totalFail+=p.failures||0;totalSucc+=p.successes||0;});
     document.getElementById('px-total').textContent=list.length;
     document.getElementById('px-requests').textContent=totalReq;
+    document.getElementById('px-successes').textContent=totalSucc;
     document.getElementById('px-failures').textContent=totalFail;
     const body=document.getElementById('proxy-body');
     const empty=document.getElementById('proxy-empty');

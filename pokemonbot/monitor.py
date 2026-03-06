@@ -60,7 +60,7 @@ class PokemonCenterMonitor(BaseMonitor):
         status_code: int = response.get("status", 0)
 
         if status_code == 403:
-            logger.info("Access denied (403) for %s – possible bot protection", url)
+            logger.warning("Access denied (403) for %s – possible bot protection", url)
             return None
 
         if status_code >= 500:

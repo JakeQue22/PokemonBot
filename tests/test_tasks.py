@@ -130,3 +130,31 @@ class TestTaskManager:
 
         assert state.checks == 1
         assert state.errors == 1
+
+    @pytest.mark.asyncio
+    async def test_check_once_logs_success_at_info(self, caplog):
+        """A successful check with no alert should log an INFO-level OK message."""
+        import logging
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing special</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                await manager._check_once(state, monitor)
+
+        assert any("OK" in r.message and r.levelno == logging.INFO for r in caplog.records)

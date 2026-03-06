@@ -104,9 +104,12 @@ class TaskManager:
         )
 
         if alert is None:
-            logger.debug(
-                "Monitor [%s] check #%d – no change", state.config.name, state.checks
-            )
+            status_code = response.get("status", 0)
+            if 200 <= status_code < 400:
+                logger.info(
+                    "Monitor [%s] check #%d OK (HTTP %d) – no change",
+                    state.config.name, state.checks, status_code,
+                )
             return
 
         # Only notify when status changes to avoid spam.

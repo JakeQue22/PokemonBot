@@ -78,6 +78,18 @@ class TestPokemonCenterMonitor:
         )
         assert alert is None
 
+    def test_403_logs_as_warning(self, caplog):
+        """403 should be logged at WARNING level, not INFO, so it appears red."""
+        import logging
+        m = PokemonCenterMonitor()
+        with caplog.at_level(logging.WARNING, logger="pokemonbot.monitor"):
+            m.parse(
+                self._make_response("blocked", status=403),
+                url="https://example.com",
+                keywords=[],
+            )
+        assert any("Access denied (403)" in r.message and r.levelno == logging.WARNING for r in caplog.records)
+
     def test_500_returns_none(self):
         m = PokemonCenterMonitor()
         alert = m.parse(
