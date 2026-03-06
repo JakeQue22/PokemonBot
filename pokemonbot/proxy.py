@@ -7,7 +7,7 @@ import logging
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +92,28 @@ def load_proxies(path: str | Path) -> list[Proxy]:
     return proxies
 
 
+def save_proxies(proxies: list[Proxy], path: str | Path) -> None:
+    """Write proxies back to a text file (one per line)."""
+    Path(path).write_text("\n".join(p.url for p in proxies) + "\n" if proxies else "")
+
+
+def ensure_proxy_file(path: str | Path) -> Path:
+    """Ensure *path* is a regular file, creating it if necessary.
+
+    If the path is a directory (e.g. Docker volume-mount placeholder),
+    it is removed first and replaced with an empty file.
+    """
+    p = Path(path)
+    if p.is_dir():
+        logger.warning("Proxy path %s is a directory – replacing with empty file", p)
+        p.rmdir()          # safe: Docker creates an empty dir
+    if not p.exists():
+        p.write_text("")
+    return p
+
+
 class ProxyPool:
-    """Thread-safe, round-robin proxy pool with optional shuffle."""
+    """Thread-safe, round-robin proxy pool with optional shuffle and per-proxy stats."""
 
     def __init__(self, proxies: list[Proxy], *, shuffle: bool = True) -> None:
         if not proxies:
@@ -104,18 +124,28 @@ class ProxyPool:
         self._proxies = pool
         self._cycle: Iterator[Proxy] = itertools.cycle(self._proxies)
         self._failed: set[str] = set()
+        # Per-proxy counters keyed by proxy URL
+        self._requests: dict[str, int] = {p.url: 0 for p in self._proxies}
+        self._failures: dict[str, int] = {p.url: 0 for p in self._proxies}
 
     @property
     def size(self) -> int:
         return len(self._proxies)
 
+    @property
+    def proxies(self) -> list[Proxy]:
+        return list(self._proxies)
+
     def next(self) -> Proxy:
         """Return the next proxy in the rotation."""
-        return next(self._cycle)
+        proxy = next(self._cycle)
+        self._requests[proxy.url] = self._requests.get(proxy.url, 0) + 1
+        return proxy
 
     def mark_failed(self, proxy: Proxy) -> None:
         """Record a proxy as failed (for informational purposes)."""
         self._failed.add(proxy.url)
+        self._failures[proxy.url] = self._failures.get(proxy.url, 0) + 1
         logger.debug("Proxy marked as failed: %s", proxy.url)
 
     @property
@@ -124,3 +154,108 @@ class ProxyPool:
 
     def reset_failures(self) -> None:
         self._failed.clear()
+
+    def stats(self) -> list[dict[str, Any]]:
+        """Return per-proxy statistics."""
+        return [
+            {
+                "url": p.url,
+                "protocol": p.protocol,
+                "host": p.host,
+                "port": p.port,
+                "requests": self._requests.get(p.url, 0),
+                "failures": self._failures.get(p.url, 0),
+            }
+            for p in self._proxies
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Public proxy fetching
+# ---------------------------------------------------------------------------
+
+# Well-known public proxy list URLs that return plain-text lists of
+# ``ip:port`` entries (one per line).
+_PUBLIC_PROXY_SOURCES: list[dict[str, str]] = [
+    {
+        "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "protocol": "http",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+        "protocol": "socks5",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "protocol": "http",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+        "protocol": "socks5",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+        "protocol": "socks5",
+    },
+]
+
+
+async def fetch_public_proxies(*, max_per_source: int = 80) -> list[Proxy]:
+    """Fetch free proxy lists from public GitHub-hosted sources.
+
+    Returns a de-duplicated list of :class:`Proxy` objects (up to
+    *max_per_source* per source to keep the list manageable).
+    """
+    import aiohttp
+
+    seen: set[str] = set()
+    proxies: list[Proxy] = []
+
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as session:
+        for source in _PUBLIC_PROXY_SOURCES:
+            try:
+                async with session.get(source["url"]) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "Public proxy source returned %d: %s",
+                            resp.status,
+                            source["url"],
+                        )
+                        continue
+                    text = await resp.text()
+            except Exception as exc:
+                logger.warning("Failed to fetch %s: %s", source["url"], exc)
+                continue
+
+            count = 0
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # Lines are typically ``ip:port``
+                try:
+                    parts = line.split(":")
+                    if len(parts) != 2:
+                        continue
+                    host, port_str = parts
+                    port = int(port_str)
+                    url = f"{source['protocol']}://{host}:{port}"
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    proxies.append(Proxy(
+                        protocol=source["protocol"],
+                        host=host,
+                        port=port,
+                    ))
+                    count += 1
+                    if count >= max_per_source:
+                        break
+                except (ValueError, IndexError):
+                    continue
+
+    logger.info("Fetched %d unique public proxies from %d sources",
+                len(proxies), len(_PUBLIC_PROXY_SOURCES))
+    return proxies

@@ -66,6 +66,7 @@ class AppConfig:
     user_agents: list[str] = field(default_factory=lambda: _DEFAULT_USER_AGENTS.copy())
     concurrency: int = 10
     request_timeout: float = 30.0
+    portal_name: str = "PokemonBot"
 
 
 _DEFAULT_USER_AGENTS: list[str] = [
@@ -135,4 +136,5 @@ def load_config(path: str | Path) -> AppConfig:
         user_agents=user_agents,
         concurrency=concurrency,
         request_timeout=request_timeout,
+        portal_name=str(raw.get("portal_name", "PokemonBot")),
     )

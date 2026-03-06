@@ -1,6 +1,13 @@
 """Tests for the proxy module."""
 
-from pokemonbot.proxy import Proxy, ProxyPool, load_proxies, parse_proxy
+from pokemonbot.proxy import (
+    Proxy,
+    ProxyPool,
+    ensure_proxy_file,
+    load_proxies,
+    parse_proxy,
+    save_proxies,
+)
 
 
 class TestParseProxy:
@@ -71,6 +78,34 @@ class TestProxyPool:
         except ValueError:
             pass
 
+    def test_stats(self):
+        proxies = self._make_proxies(2)
+        pool = ProxyPool(proxies, shuffle=False)
+        # Use each proxy once
+        p0 = pool.next()
+        p1 = pool.next()
+        pool.mark_failed(p1)
+        stats = pool.stats()
+        assert len(stats) == 2
+        assert stats[0]["requests"] == 1
+        assert stats[0]["failures"] == 0
+        assert stats[1]["requests"] == 1
+        assert stats[1]["failures"] == 1
+
+    def test_proxies_property(self):
+        proxies = self._make_proxies(3)
+        pool = ProxyPool(proxies, shuffle=False)
+        assert pool.proxies == proxies
+
+    def test_next_increments_requests(self):
+        proxies = self._make_proxies(1)
+        pool = ProxyPool(proxies, shuffle=False)
+        pool.next()
+        pool.next()
+        pool.next()
+        stats = pool.stats()
+        assert stats[0]["requests"] == 3
+
 
 class TestLoadProxies:
     def test_load_from_file(self, tmp_path):
@@ -86,3 +121,45 @@ class TestLoadProxies:
         f.write_text("valid:8080\nnot_valid_at_all\n")
         result = load_proxies(f)
         assert len(result) == 1
+
+
+class TestSaveProxies:
+    def test_save_and_reload(self, tmp_path):
+        f = tmp_path / "proxies.txt"
+        proxies = [
+            Proxy(protocol="http", host="1.1.1.1", port=8080),
+            Proxy(protocol="socks5", host="2.2.2.2", port=1080),
+        ]
+        save_proxies(proxies, f)
+        loaded = load_proxies(f)
+        assert len(loaded) == 2
+        assert loaded[0].host == "1.1.1.1"
+        assert loaded[1].protocol == "socks5"
+
+    def test_save_empty(self, tmp_path):
+        f = tmp_path / "proxies.txt"
+        save_proxies([], f)
+        assert f.read_text() == ""
+
+
+class TestEnsureProxyFile:
+    def test_creates_missing_file(self, tmp_path):
+        f = tmp_path / "new_proxies.txt"
+        assert not f.exists()
+        result = ensure_proxy_file(f)
+        assert result.is_file()
+
+    def test_replaces_directory_with_file(self, tmp_path):
+        d = tmp_path / "proxies.txt"
+        d.mkdir()
+        assert d.is_dir()
+        result = ensure_proxy_file(d)
+        assert result.is_file()
+        assert not result.is_dir()
+
+    def test_leaves_existing_file_alone(self, tmp_path):
+        f = tmp_path / "proxies.txt"
+        f.write_text("http://1.1.1.1:8080\n")
+        result = ensure_proxy_file(f)
+        assert result.is_file()
+        assert "1.1.1.1" in result.read_text()

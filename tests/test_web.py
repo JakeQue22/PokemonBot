@@ -305,3 +305,145 @@ class TestDashboard:
         client = await aiohttp_client(web_app)
         resp = await client.delete("/api/monitors/99")
         assert resp.status == 404
+
+    # ---- Monitor update (edit) tests ----
+
+    @pytest.mark.asyncio
+    async def test_monitors_update(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.put(
+            "/api/monitors/0",
+            json={
+                "name": "Updated Name",
+                "url": "https://example.com/updated",
+                "keywords": "kw1, kw2",
+                "interval": 20,
+            },
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "updated"
+        assert data["monitor"]["name"] == "Updated Name"
+        assert data["monitor"]["url"] == "https://example.com/updated"
+        assert data["monitor"]["keywords"] == ["kw1", "kw2"]
+        assert data["monitor"]["interval"] == 20
+
+    @pytest.mark.asyncio
+    async def test_monitors_update_out_of_range(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.put("/api/monitors/99", json={"name": "x"})
+        assert resp.status == 404
+
+    # ---- Proxy CRUD tests ----
+
+    @pytest.mark.asyncio
+    async def test_proxies_list_empty(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/proxies")
+        assert resp.status == 200
+        data = await resp.json()
+        assert isinstance(data["proxies"], list)
+
+    @pytest.mark.asyncio
+    async def test_proxies_add_and_list(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/proxies",
+            json={"proxy": "http://1.2.3.4:8080"},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "added"
+
+        resp = await client.get("/api/proxies")
+        data = await resp.json()
+        assert len(data["proxies"]) >= 1
+        assert any(p["host"] == "1.2.3.4" for p in data["proxies"])
+
+    @pytest.mark.asyncio
+    async def test_proxies_add_invalid(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/proxies",
+            json={"proxy": "not_valid_at_all"},
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_proxies_add_empty(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post("/api/proxies", json={"proxy": ""})
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_proxies_delete(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        # Add first
+        await client.post("/api/proxies", json={"proxy": "http://10.0.0.1:3128"})
+        # Delete
+        resp = await client.delete("/api/proxies/0")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "removed"
+
+    @pytest.mark.asyncio
+    async def test_proxies_delete_out_of_range(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.delete("/api/proxies/99")
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_proxies_bulk_update(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.put(
+            "/api/proxies",
+            json={"proxies": [
+                "http://1.1.1.1:8080",
+                "socks5://2.2.2.2:1080",
+                "invalid_line",
+            ]},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "updated"
+        assert data["count"] == 2  # only 2 valid
+        assert len(data["errors"]) == 1  # 1 invalid
+
+    # ---- General settings tests ----
+
+    @pytest.mark.asyncio
+    async def test_general_settings_get(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/general-settings")
+        assert resp.status == 200
+        data = await resp.json()
+        assert "portal_name" in data
+        assert "concurrency" in data
+        assert "request_timeout" in data
+
+    @pytest.mark.asyncio
+    async def test_general_settings_roundtrip(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/general-settings",
+            json={"portal_name": "MyBot", "concurrency": 5, "request_timeout": 15},
+        )
+        assert resp.status == 200
+
+        resp = await client.get("/api/general-settings")
+        data = await resp.json()
+        assert data["portal_name"] == "MyBot"
+        assert data["concurrency"] == 5
+        assert data["request_timeout"] == 15
+
+    @pytest.mark.asyncio
+    async def test_portal_name_in_html(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        # Update portal name
+        await client.post(
+            "/api/general-settings",
+            json={"portal_name": "TestPortal"},
+        )
+        resp = await client.get("/")
+        text = await resp.text()
+        assert "TestPortal" in text

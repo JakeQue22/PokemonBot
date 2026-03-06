@@ -20,7 +20,14 @@ from pokemonbot.notifier import (
     EmailNotifier,
     NotifierPipeline,
 )
-from pokemonbot.proxy import ProxyPool, load_proxies
+from pokemonbot.proxy import (
+    ProxyPool,
+    ensure_proxy_file,
+    fetch_public_proxies,
+    load_proxies,
+    parse_proxy,
+    save_proxies,
+)
 from pokemonbot.tasks import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -109,15 +116,15 @@ async def _api_start(request: web.Request) -> web.Response:
     if not cfg.monitors:
         return web.json_response({"error": "No monitors configured"}, status=400)
 
-    # Proxies – guard against path being a directory (Docker volume mount edge case)
+    # Proxies – ensure file exists and load
     proxy_pool: ProxyPool | None = None
-    proxy_path = Path(cfg.proxies.file)
+    proxy_path = ensure_proxy_file(cfg.proxies.file)
     if proxy_path.is_file():
         proxies = load_proxies(proxy_path)
         if proxies:
             proxy_pool = ProxyPool(proxies)
-    elif proxy_path.exists():
-        logger.warning("Proxy path %s exists but is not a file – skipping", proxy_path)
+        else:
+            logger.warning("Proxy file %s contains no valid proxies – running without proxies", proxy_path)
 
     # Notifiers
     notifier = NotifierPipeline()
@@ -362,6 +369,194 @@ async def _api_monitors_delete(request: web.Request) -> web.Response:
     return web.json_response({"status": "removed", "monitor": _monitor_to_dict(removed)})
 
 
+async def _api_monitors_update(request: web.Request) -> web.Response:
+    """Update an existing monitor by index."""
+    state: _AppState = request.app["state"]
+    try:
+        idx = int(request.match_info["index"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid index"}, status=400)
+
+    if idx < 0 or idx >= len(state.config.monitors):
+        return web.json_response({"error": "Index out of range"}, status=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    m = state.config.monitors[idx]
+    if "name" in body:
+        m.name = str(body["name"]).strip() or m.name
+    if "url" in body:
+        url = str(body["url"]).strip()
+        if url:
+            m.url = url
+    if "site" in body:
+        m.site = str(body["site"]).strip() or m.site
+    if "keywords" in body:
+        kw = body["keywords"]
+        if isinstance(kw, str):
+            m.keywords = [k.strip() for k in kw.split(",") if k.strip()]
+        else:
+            m.keywords = list(kw)
+    if "interval" in body:
+        m.interval = max(1.0, float(body["interval"]))
+
+    logger.info("Monitor updated [%d]: %s → %s", idx, m.name, m.url)
+    return web.json_response({"status": "updated", "monitor": _monitor_to_dict(m)})
+
+
+# -- Proxy CRUD endpoints ------------------------------------------------
+
+async def _api_proxies_list(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    # Return per-proxy stats if a pool is active, otherwise list from file
+    if state.manager and state.manager.proxy_pool:
+        data = state.manager.proxy_pool.stats()
+    else:
+        proxy_path = ensure_proxy_file(state.config.proxies.file)
+        loaded = load_proxies(proxy_path) if proxy_path.is_file() else []
+        data = [
+            {"url": p.url, "protocol": p.protocol, "host": p.host, "port": p.port,
+             "requests": 0, "failures": 0}
+            for p in loaded
+        ]
+    return web.json_response({"proxies": data})
+
+
+async def _api_proxies_add(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    raw = (body.get("proxy") or "").strip()
+    if not raw:
+        return web.json_response({"error": "proxy is required"}, status=400)
+
+    try:
+        proxy = parse_proxy(raw)
+    except (ValueError, IndexError) as exc:
+        return web.json_response({"error": f"Invalid proxy: {exc}"}, status=400)
+
+    # Persist to file
+    proxy_path = ensure_proxy_file(state.config.proxies.file)
+    existing = load_proxies(proxy_path) if proxy_path.is_file() else []
+    existing.append(proxy)
+    save_proxies(existing, proxy_path)
+    logger.info("Proxy added: %s", proxy.url)
+    return web.json_response({"status": "added", "proxy": proxy.url})
+
+
+async def _api_proxies_delete(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    try:
+        idx = int(request.match_info["index"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid index"}, status=400)
+
+    proxy_path = ensure_proxy_file(state.config.proxies.file)
+    proxies = load_proxies(proxy_path) if proxy_path.is_file() else []
+
+    if idx < 0 or idx >= len(proxies):
+        return web.json_response({"error": "Index out of range"}, status=404)
+
+    removed = proxies.pop(idx)
+    save_proxies(proxies, proxy_path)
+    logger.info("Proxy removed: %s", removed.url)
+    return web.json_response({"status": "removed", "proxy": removed.url})
+
+
+async def _api_proxies_bulk(request: web.Request) -> web.Response:
+    """Replace the entire proxy list at once (bulk edit)."""
+    state: _AppState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    raw_lines: list[str] = body.get("proxies", [])
+    if isinstance(raw_lines, str):
+        raw_lines = [l.strip() for l in raw_lines.splitlines() if l.strip()]
+
+    proxies = []
+    errors = []
+    for i, line in enumerate(raw_lines):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            proxies.append(parse_proxy(line))
+        except (ValueError, IndexError) as exc:
+            errors.append(f"Line {i+1}: {exc}")
+
+    proxy_path = ensure_proxy_file(state.config.proxies.file)
+    save_proxies(proxies, proxy_path)
+    logger.info("Proxy list updated: %d proxies saved", len(proxies))
+    return web.json_response({"status": "updated", "count": len(proxies), "errors": errors})
+
+
+# -- General settings endpoints -------------------------------------------
+
+async def _api_general_settings_get(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    return web.json_response({
+        "portal_name": state.config.portal_name,
+        "concurrency": state.config.concurrency,
+        "request_timeout": state.config.request_timeout,
+    })
+
+
+async def _api_general_settings_post(request: web.Request) -> web.Response:
+    state: _AppState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    if "portal_name" in body:
+        state.config.portal_name = str(body["portal_name"]).strip() or "PokemonBot"
+    if "concurrency" in body:
+        state.config.concurrency = max(1, int(body["concurrency"]))
+    if "request_timeout" in body:
+        state.config.request_timeout = max(1.0, float(body["request_timeout"]))
+    return web.json_response({"status": "updated"})
+
+
+# -- Fetch public proxies endpoint ----------------------------------------
+
+async def _api_proxies_fetch_public(request: web.Request) -> web.Response:
+    """Fetch free proxies from public sources and save them to the proxy file."""
+    state: _AppState = request.app["state"]
+    try:
+        proxies = await fetch_public_proxies()
+    except Exception as exc:
+        logger.exception("Failed to fetch public proxies")
+        return web.json_response({"error": str(exc)}, status=500)
+
+    if not proxies:
+        return web.json_response(
+            {"error": "No proxies could be fetched from public sources"}, status=400
+        )
+
+    proxy_path = ensure_proxy_file(state.config.proxies.file)
+    # Merge with any existing proxies, de-duplicate by URL
+    existing = load_proxies(proxy_path) if proxy_path.is_file() else []
+    existing_urls = {p.url for p in existing}
+    new_proxies = [p for p in proxies if p.url not in existing_urls]
+    merged = existing + new_proxies
+    save_proxies(merged, proxy_path)
+    logger.info("Public proxies fetched: %d new, %d total", len(new_proxies), len(merged))
+    return web.json_response({
+        "status": "ok",
+        "fetched": len(proxies),
+        "new": len(new_proxies),
+        "total": len(merged),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Embedded HTML dashboard
 # ---------------------------------------------------------------------------
@@ -371,7 +566,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PokemonBot Dashboard</title>
+<title>{{PORTAL_NAME}} Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -478,7 +673,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 
 <!-- Header -->
 <div class="header">
-  <h1>🎴 PokemonBot</h1>
+  <h1>🎴 {{PORTAL_NAME}}</h1>
   <span class="version" id="version"></span>
   <div class="status-pill off" id="status-pill"><div class="dot"></div><span id="status-label">Stopped</span></div>
 </div>
@@ -557,10 +752,33 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <div class="card">
         <h2>Configured Monitors</h2>
         <table class="tbl" id="monitors-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:80px"></th></tr></thead>
           <tbody id="monitors-body"></tbody>
         </table>
         <div id="monitors-empty" style="text-align:center;padding:2rem;color:var(--muted);font-size:.85rem">No monitors configured.</div>
+      </div>
+
+      <!-- Edit modal (hidden by default) -->
+      <div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:none;align-items:center;justify-content:center">
+        <div class="card" style="width:480px;max-width:95vw">
+          <h2>Edit Monitor</h2>
+          <input type="hidden" id="edit-idx">
+          <div class="form-grid">
+            <label>Name</label>        <input id="edit-name">
+            <label>URL</label>         <input id="edit-url">
+            <label>Site</label>
+            <select id="edit-site">
+              <option value="pokemoncenter">pokemoncenter</option>
+              <option value="generic">generic</option>
+            </select>
+            <label>Keywords</label>    <input id="edit-keywords">
+            <label>Interval (s)</label><input id="edit-interval" type="number" min="1" step="1">
+          </div>
+          <div class="controls" style="margin-top:.8rem">
+            <button class="btn btn-accent" onclick="saveEditMonitor()">💾 Save</button>
+            <button class="btn btn-outline" onclick="closeEditModal()">Cancel</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -589,14 +807,71 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
     <!-- ============ SETTINGS PAGE ============ -->
     <div class="page" id="page-settings">
 
-      <!-- Sub-tabs for Email / Discord -->
+      <!-- Sub-tabs -->
       <div class="tab-bar">
-        <button class="tab-btn active" onclick="showTab('email',this)">📧 Email / SMTP</button>
+        <button class="tab-btn active" onclick="showTab('general',this)">🏷️ General</button>
+        <button class="tab-btn" onclick="showTab('proxies',this)">🌐 Proxies</button>
+        <button class="tab-btn" onclick="showTab('email',this)">📧 Email / SMTP</button>
         <button class="tab-btn" onclick="showTab('discord',this)">💬 Discord</button>
       </div>
 
+      <!-- General Tab -->
+      <div class="tab-panel active" id="tab-general">
+        <div class="card">
+          <h2>General Settings</h2>
+          <div class="form-grid">
+            <label>Portal Name</label>    <input id="gen-name" placeholder="PokemonBot">
+            <label>Concurrency</label>    <input id="gen-concurrency" type="number" value="10" min="1">
+            <label>Request Timeout (s)</label> <input id="gen-timeout" type="number" value="30" min="1" step="1">
+          </div>
+          <div class="controls" style="margin-top:.8rem">
+            <button class="btn btn-accent" onclick="saveGeneral()">💾 Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Proxies Tab -->
+      <div class="tab-panel" id="tab-proxies">
+        <div class="card">
+          <h2>Proxy List</h2>
+          <p style="font-size:.82rem;color:var(--muted);margin-bottom:.7rem">Manage your rotating proxy list. The bot must be restarted to use updated proxies. You can also auto-populate from public sources.</p>
+
+          <div class="stats" style="margin-bottom:.8rem">
+            <div class="stat purple"><div class="num" id="px-total">0</div><div class="lbl">Total Proxies</div></div>
+            <div class="stat green"><div class="num" id="px-requests">0</div><div class="lbl">Total Requests</div></div>
+            <div class="stat red"><div class="num" id="px-failures">0</div><div class="lbl">Total Failures</div></div>
+          </div>
+
+          <div class="controls" style="margin-bottom:.8rem">
+            <button class="btn btn-accent" onclick="fetchPublicProxies()">🌍 Fetch Public Proxies</button>
+            <button class="btn btn-outline" onclick="refreshProxies()">🔄 Refresh</button>
+          </div>
+
+          <table class="tbl" id="proxy-table">
+            <thead><tr><th>#</th><th>Protocol</th><th>Host</th><th>Port</th><th>Requests</th><th>Failures</th><th></th></tr></thead>
+            <tbody id="proxy-body"></tbody>
+          </table>
+          <div id="proxy-empty" style="text-align:center;padding:1.5rem;color:var(--muted);font-size:.85rem">No proxies configured. Click <b>Fetch Public Proxies</b> to get started.</div>
+
+          <h3>Add Proxy</h3>
+          <div class="form-grid" style="margin-bottom:.6rem">
+            <label>Proxy</label> <input id="px-new" placeholder="protocol://host:port or host:port">
+          </div>
+          <div class="controls">
+            <button class="btn btn-accent btn-sm" onclick="addProxy()">➕ Add</button>
+          </div>
+
+          <h3>Bulk Edit</h3>
+          <p style="font-size:.78rem;color:var(--muted);margin-bottom:.4rem">One proxy per line. Existing list will be replaced.</p>
+          <textarea id="px-bulk" style="width:100%;height:120px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:.5rem;color:var(--text);font-family:monospace;font-size:.78rem;resize:vertical"></textarea>
+          <div class="controls" style="margin-top:.5rem">
+            <button class="btn btn-accent btn-sm" onclick="bulkSaveProxies()">💾 Save All</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Email Tab -->
-      <div class="tab-panel active" id="tab-email">
+      <div class="tab-panel" id="tab-email">
         <div class="card">
           <h2>Email / SMTP Settings</h2>
           <div class="form-grid">
@@ -662,7 +937,7 @@ function showPage(id,el){
   document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));
   if(el)el.classList.add('active');
   if(id==='config')loadConfig();
-  if(id==='settings'){loadEmail();loadDiscord();}
+  if(id==='settings'){loadGeneral();loadProxies();loadEmail();loadDiscord();}
   return false;
 }
 function showTab(id,el){
@@ -721,9 +996,9 @@ function updateMonitorsPage(d){
     empty.style.display='none';
     body.innerHTML=d.tasks.map((t,i)=>{
       let badge='badge-muted';if(t.last_status==='in_stock')badge='badge-green';else if(t.last_status==='queue_active')badge='badge-yellow';
-      return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.url)}</td>`+
+      return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(t.url)}</a></td>`+
       `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
-      `<td><button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
+      `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     return;
   }
@@ -733,10 +1008,10 @@ function updateMonitorsPage(d){
     const rt=taskMap[m.name]||{};
     let badge='badge-muted';const st=rt.last_status||'';
     if(st==='in_stock')badge='badge-green';else if(st==='queue_active')badge='badge-yellow';
-    return `<tr><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.url)}</td>`+
+    return `<tr><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(m.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(m.url)}</a></td>`+
     `<td>${esc(m.site)}</td><td>${esc((m.keywords||[]).join(', ')||'–')}</td><td>${m.interval}s</td>`+
     `<td>${rt.checks??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td>`+
-    `<td><button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
+    `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
   }).join('');
 }
 
@@ -768,6 +1043,33 @@ async function removeMonitor(idx){
   const d=await r.json();
   if(r.ok){toast('Monitor removed. Stop and start the bot to apply.',true);loadConfig();fetchStatus();}
   else toast(d.error||'Failed to remove',false);
+}
+function editMonitor(idx){
+  const m=(window._cfgMonitors||[])[idx];
+  if(!m)return;
+  document.getElementById('edit-idx').value=idx;
+  document.getElementById('edit-name').value=m.name||'';
+  document.getElementById('edit-url').value=m.url||'';
+  document.getElementById('edit-site').value=m.site||'pokemoncenter';
+  document.getElementById('edit-keywords').value=(m.keywords||[]).join(', ');
+  document.getElementById('edit-interval').value=m.interval||10;
+  document.getElementById('edit-modal').style.display='flex';
+}
+function closeEditModal(){document.getElementById('edit-modal').style.display='none';}
+async function saveEditMonitor(){
+  const idx=document.getElementById('edit-idx').value;
+  const body={
+    name:document.getElementById('edit-name').value.trim(),
+    url:document.getElementById('edit-url').value.trim(),
+    site:document.getElementById('edit-site').value,
+    keywords:document.getElementById('edit-keywords').value,
+    interval:parseFloat(document.getElementById('edit-interval').value)||10
+  };
+  if(!body.url){toast('URL is required',false);return;}
+  const r=await fetch(API+'/api/monitors/'+idx,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(r.ok){toast('Monitor updated. Stop and start the bot to apply.',true);closeEditModal();loadConfig();fetchStatus();}
+  else toast(d.error||'Failed to update',false);
 }
 
 /* ---- Logs ---- */
@@ -865,6 +1167,83 @@ async function testDiscord(){
   if(r.ok)toast(d.message,true);else toast(d.message||'Failed',false);
 }
 
+/* ---- General settings ---- */
+async function loadGeneral(){
+  try{
+    const r=await fetch(API+'/api/general-settings');const d=await r.json();
+    document.getElementById('gen-name').value=d.portal_name||'';
+    document.getElementById('gen-concurrency').value=d.concurrency||10;
+    document.getElementById('gen-timeout').value=d.request_timeout||30;
+  }catch(e){}
+}
+async function saveGeneral(){
+  const body={
+    portal_name:document.getElementById('gen-name').value.trim(),
+    concurrency:parseInt(document.getElementById('gen-concurrency').value)||10,
+    request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30
+  };
+  const r=await fetch(API+'/api/general-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok)toast('General settings saved. Reload the page to see the new name.',true);else toast('Failed to save',false);
+}
+
+/* ---- Proxy management ---- */
+async function loadProxies(){await refreshProxies();}
+async function refreshProxies(){
+  try{
+    const r=await fetch(API+'/api/proxies');const d=await r.json();
+    const list=d.proxies||[];
+    let totalReq=0,totalFail=0;
+    list.forEach(p=>{totalReq+=p.requests||0;totalFail+=p.failures||0;});
+    document.getElementById('px-total').textContent=list.length;
+    document.getElementById('px-requests').textContent=totalReq;
+    document.getElementById('px-failures').textContent=totalFail;
+    const body=document.getElementById('proxy-body');
+    const empty=document.getElementById('proxy-empty');
+    if(!list.length){empty.style.display='';body.innerHTML='';return;}
+    empty.style.display='none';
+    body.innerHTML=list.map((p,i)=>{
+      const failCls=p.failures>0?' style="color:var(--accent2)"':'';
+      return `<tr><td>${i+1}</td><td>${esc(p.protocol)}</td><td>${esc(p.host)}</td><td>${p.port}</td>`+
+      `<td>${p.requests}</td><td${failCls}>${p.failures}</td>`+
+      `<td><button class="btn btn-outline btn-sm" onclick="removeProxy(${i})" title="Remove">🗑️</button></td></tr>`;
+    }).join('');
+    /* Also populate bulk textarea */
+    document.getElementById('px-bulk').value=list.map(p=>p.url).join('\n');
+  }catch(e){}
+}
+async function addProxy(){
+  const raw=document.getElementById('px-new').value.trim();
+  if(!raw){toast('Enter a proxy',false);return;}
+  const r=await fetch(API+'/api/proxies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proxy:raw})});
+  const d=await r.json();
+  if(r.ok){toast('Proxy added',true);document.getElementById('px-new').value='';refreshProxies();}
+  else toast(d.error||'Failed',false);
+}
+async function removeProxy(idx){
+  const r=await fetch(API+'/api/proxies/'+idx,{method:'DELETE'});
+  const d=await r.json();
+  if(r.ok){toast('Proxy removed',true);refreshProxies();}
+  else toast(d.error||'Failed',false);
+}
+async function bulkSaveProxies(){
+  const raw=document.getElementById('px-bulk').value;
+  const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('#'));
+  const r=await fetch(API+'/api/proxies',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({proxies:lines})});
+  const d=await r.json();
+  if(r.ok){
+    let msg='Saved '+d.count+' proxies';
+    if(d.errors&&d.errors.length)msg+=' ('+d.errors.length+' errors)';
+    toast(msg,true);refreshProxies();
+  }else toast(d.error||'Failed',false);
+}
+async function fetchPublicProxies(){
+  toast('Fetching public proxies… this may take a moment',true);
+  const r=await fetch(API+'/api/proxies/fetch-public',{method:'POST'});
+  const d=await r.json();
+  if(r.ok){toast('Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
+  else toast(d.error||'Failed to fetch',false);
+}
+
 /* ---- Config viewer ---- */
 async function loadConfig(){
   try{
@@ -875,7 +1254,7 @@ async function loadConfig(){
 }
 
 /* ---- Init ---- */
-fetchStatus();fetchLogs();loadEmail();loadDiscord();loadConfig();
+fetchStatus();fetchLogs();loadGeneral();loadConfig();
 setInterval(()=>{fetchStatus();fetchLogs();},2000);
 </script>
 </body>
@@ -883,7 +1262,10 @@ setInterval(()=>{fetchStatus();fetchLogs();},2000);
 
 
 async def _index(request: web.Request) -> web.Response:
-    return web.Response(text=_DASHBOARD_HTML, content_type="text/html")
+    state: _AppState = request.app["state"]
+    name = html.escape(state.config.portal_name or "PokemonBot")
+    page = _DASHBOARD_HTML.replace("{{PORTAL_NAME}}", name)
+    return web.Response(text=page, content_type="text/html")
 
 
 # ---------------------------------------------------------------------------
@@ -925,6 +1307,14 @@ def create_web_app(config_path: str = "config.yaml") -> web.Application:
     app.router.add_get("/api/monitors", _api_monitors_list)
     app.router.add_post("/api/monitors", _api_monitors_add)
     app.router.add_delete("/api/monitors/{index}", _api_monitors_delete)
+    app.router.add_put("/api/monitors/{index}", _api_monitors_update)
+    app.router.add_get("/api/proxies", _api_proxies_list)
+    app.router.add_post("/api/proxies", _api_proxies_add)
+    app.router.add_put("/api/proxies", _api_proxies_bulk)
+    app.router.add_delete("/api/proxies/{index}", _api_proxies_delete)
+    app.router.add_post("/api/proxies/fetch-public", _api_proxies_fetch_public)
+    app.router.add_get("/api/general-settings", _api_general_settings_get)
+    app.router.add_post("/api/general-settings", _api_general_settings_post)
 
     return app
 
