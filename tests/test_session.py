@@ -207,3 +207,97 @@ class TestFetchProxyTimeout:
             # No proxy pool → direct connection → main timeout used
             _, kwargs = mock_cffi.call_args
             assert kwargs["timeout"] == 30.0
+
+
+class TestFetchDirectFallback:
+    @pytest.mark.asyncio
+    async def test_direct_fallback_when_all_proxies_fail(self):
+        """When all proxy attempts fail, fetch() should try a direct connection."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        fake_response = {
+            "status": 200,
+            "body": "<html>OK</html>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        call_count = 0
+        last_proxy_arg = "UNSET"
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count, last_proxy_arg
+            call_count += 1
+            last_proxy_arg = proxy
+            if proxy is not None:
+                raise ConnectionError("proxy dead")
+            return fake_response
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                timeout=30.0,
+                proxy_timeout=10.0,
+                max_retries=2,
+            )
+            assert result["status"] == 200
+            # The last (successful) call should be direct (proxy=None)
+            assert last_proxy_arg is None
+            assert call_count >= 2  # at least 1 proxy + 1 direct
+
+    @pytest.mark.asyncio
+    async def test_direct_fallback_also_fails_raises(self):
+        """When both proxy and direct attempts fail, ConnectionError is raised."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        async def mock_fetch(url, **kwargs):
+            raise ConnectionError("all dead")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            with pytest.raises(ConnectionError):
+                await fetch(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    timeout=30.0,
+                    max_retries=1,
+                )
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_without_proxy_pool(self):
+        """Without a proxy pool there is no fallback – just retries."""
+        from pokemonbot.session import fetch
+
+        call_count = 0
+
+        async def mock_fetch(url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("dead")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            with pytest.raises(ConnectionError):
+                await fetch(
+                    "https://example.com",
+                    timeout=30.0,
+                    max_retries=2,
+                )
+            # Only retry attempts, no extra fallback
+            assert call_count == 2

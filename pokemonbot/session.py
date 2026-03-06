@@ -295,6 +295,29 @@ async def fetch(
                 jitter = random.uniform(0.5, 2.0)
                 await asyncio.sleep(jitter)
 
+    # --- Direct-connection fallback ---
+    # When a proxy pool is configured but every proxied attempt failed,
+    # try ONE final request without a proxy.  This keeps the monitors
+    # alive even when all public proxies are dead.
+    if proxy_pool is not None:
+        try:
+            logger.info(
+                "All proxy attempts exhausted – trying direct connection for %s",
+                url,
+            )
+            result = await do_fetch(
+                url,
+                proxy=None,
+                user_agents=user_agents,
+                timeout=timeout,
+                headers=merged_headers or None,
+                cookies=domain_cookies or None,
+            )
+            return result
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Direct fallback also failed for %s: %s", url, exc)
+
     raise ConnectionError(
         f"All {attempts} attempts failed for {url}"
     ) from last_error
