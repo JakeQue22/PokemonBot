@@ -94,7 +94,10 @@ def load_proxies(path: str | Path) -> list[Proxy]:
 
 def save_proxies(proxies: list[Proxy], path: str | Path) -> None:
     """Write proxies back to a text file (one per line)."""
-    Path(path).write_text("\n".join(p.url for p in proxies) + "\n" if proxies else "")
+    content = "\n".join(p.url for p in proxies)
+    if content:
+        content += "\n"
+    Path(path).write_text(content)
 
 
 def ensure_proxy_file(path: str | Path) -> Path:
@@ -103,10 +106,12 @@ def ensure_proxy_file(path: str | Path) -> Path:
     If the path is a directory (e.g. Docker volume-mount placeholder),
     it is removed first and replaced with an empty file.
     """
+    import shutil
+
     p = Path(path)
     if p.is_dir():
         logger.warning("Proxy path %s is a directory – replacing with empty file", p)
-        p.rmdir()          # safe: Docker creates an empty dir
+        shutil.rmtree(p)
     if not p.exists():
         p.write_text("")
     return p

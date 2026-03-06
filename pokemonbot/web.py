@@ -759,7 +759,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       </div>
 
       <!-- Edit modal (hidden by default) -->
-      <div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:none;align-items:center;justify-content:center">
+      <div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;align-items:center;justify-content:center">
         <div class="card" style="width:480px;max-width:95vw">
           <h2>Edit Monitor</h2>
           <input type="hidden" id="edit-idx">
