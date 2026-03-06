@@ -77,3 +77,16 @@ class TestBuildConnector:
         connector = _build_connector(proxy)
         assert connector._ssl is False
         await connector.close()
+
+
+class TestBrotliSupport:
+    def test_brotli_importable(self):
+        """Brotli must be installed so aiohttp can decompress br responses."""
+        import brotli  # noqa: F401
+
+    @pytest.mark.asyncio
+    async def test_accept_encoding_includes_br(self):
+        """Session headers advertise brotli; the package must back that up."""
+        session = await create_session(timeout=5.0)
+        assert "br" in session.headers.get("Accept-Encoding", "")
+        await session.close()
