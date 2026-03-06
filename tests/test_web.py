@@ -601,3 +601,29 @@ class TestDashboard:
         resp = await client.get("/")
         text = await resp.text()
         assert "<th>Successes</th>" in text
+
+    @pytest.mark.asyncio
+    async def test_general_settings_max_retries_roundtrip(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/general-settings",
+            json={"max_retries": 20},
+        )
+        assert resp.status == 200
+
+        resp = await client.get("/api/general-settings")
+        data = await resp.json()
+        assert data["max_retries"] == 20
+
+    @pytest.mark.asyncio
+    async def test_general_settings_max_retries_minimum(self, web_app, aiohttp_client):
+        """max_retries should never go below 1."""
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/general-settings",
+            json={"max_retries": 0},
+        )
+        assert resp.status == 200
+        resp = await client.get("/api/general-settings")
+        data = await resp.json()
+        assert data["max_retries"] == 1

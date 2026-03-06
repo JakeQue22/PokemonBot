@@ -112,10 +112,10 @@ async def fetch(
 ) -> dict[str, Any]:
     """Fetch a URL with automatic proxy rotation on failure.
 
-    When a *proxy_pool* is provided the function cycles through **all**
-    available (non-cooldown) proxies before giving up, so ``max_retries``
-    only applies when no proxy pool is used.  Failed proxies are placed on
-    cooldown so they are automatically skipped on subsequent requests.
+    *max_retries* caps the number of proxy attempts per call so the bot
+    does not spend minutes cycling through thousands of dead proxies.
+    Failed proxies are placed on cooldown so they are automatically
+    skipped on subsequent requests.
 
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``.
     """
@@ -123,8 +123,10 @@ async def fetch(
     domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
-    # When we have a proxy pool, try every available proxy (not just 3).
-    attempts = proxy_pool.size if proxy_pool else max_retries
+    # Cap attempts at max_retries – even with a large proxy pool we don't
+    # want to try every single proxy in one call.  The cooldown mechanism
+    # ensures persistently-bad proxies are skipped on the next cycle.
+    attempts = max_retries
 
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):

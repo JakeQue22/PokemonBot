@@ -26,6 +26,7 @@ notifier:
   discord_webhook_url: "https://discord.com/api/webhooks/test"
 concurrency: 5
 request_timeout: 15.0
+max_retries: 20
 monitors:
   - name: test
     url: https://example.com
@@ -40,6 +41,7 @@ monitors:
         assert cfg.proxies.rotate_on_error is False
         assert cfg.notifier.discord_webhook_url == "https://discord.com/api/webhooks/test"
         assert cfg.concurrency == 5
+        assert cfg.max_retries == 20
         assert len(cfg.monitors) == 1
         m = cfg.monitors[0]
         assert m.name == "test"

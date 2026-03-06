@@ -90,6 +90,7 @@ class TaskManager:
                 user_agents=self.app_config.user_agents,
                 timeout=self.app_config.request_timeout,
                 extra_headers=state.config.headers or None,
+                max_retries=self.app_config.max_retries,
             )
         except ConnectionError as exc:
             state.errors += 1
