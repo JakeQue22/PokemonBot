@@ -1001,7 +1001,7 @@ async function fetchStatus(){
 
     /* Stats */
     let checks=0,alerts=0,errors=0,successes=0;
-    if(d.tasks)d.tasks.forEach(t=>{checks+=t.checks;alerts+=t.alerts;errors+=t.errors;successes+=t.successes||0;});
+    if(d.tasks)d.tasks.forEach(t=>{checks+=t.checks||0;alerts+=t.alerts||0;errors+=t.errors||0;successes+=t.successes||0;});
     document.getElementById('st-monitors').textContent=d.monitors;
     document.getElementById('st-checks').textContent=checks;
     document.getElementById('st-successes').textContent=successes;

@@ -99,6 +99,9 @@ class TaskManager:
             logger.error("Monitor [%s] connection error: %s", state.config.name, exc)
             return
 
+        # If we got a response, the fetch itself succeeded.
+        state.successes += 1
+
         alert: Alert | None = monitor.parse(  # type: ignore[union-attr]
             response,
             url=state.config.url,
@@ -108,7 +111,6 @@ class TaskManager:
         if alert is None:
             status_code = response.get("status", 0)
             if 200 <= status_code < 400:
-                state.successes += 1
                 logger.info(
                     "Monitor [%s] check #%d OK (HTTP %d) – no change",
                     state.config.name, state.checks, status_code,
@@ -124,10 +126,8 @@ class TaskManager:
         if alert.status != state.last_status:
             state.last_status = alert.status
             state.alerts += 1
-            state.successes += 1
             await self.notifier.send(alert)
         else:
-            state.successes += 1
             logger.debug(
                 "Monitor [%s] status unchanged (%s)", state.config.name, alert.status
             )
