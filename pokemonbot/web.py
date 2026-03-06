@@ -536,7 +536,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <!-- Add Monitor form -->
       <div class="card">
         <h2>Add Monitor</h2>
-        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.7rem">Add a new URL to monitor. The bot must be restarted for new monitors to take effect.</p>
+        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.7rem">Add a new URL to monitor. If the bot is already running, stop and start it again to pick up the new monitor.</p>
         <div class="form-grid">
           <label>Name</label>        <input id="mon-name" placeholder="e.g. Elite Trainer Box">
           <label>URL</label>         <input id="mon-url" placeholder="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box">
@@ -754,7 +754,7 @@ async function addMonitor(){
   const r=await fetch(API+'/api/monitors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();
   if(r.ok){
-    toast('Monitor added! Restart the bot for changes to take effect.',true);
+    toast('Monitor added! Stop and start the bot to activate it.',true);
     document.getElementById('mon-name').value='';
     document.getElementById('mon-url').value='';
     document.getElementById('mon-keywords').value='';
@@ -766,7 +766,7 @@ async function removeMonitor(idx){
   if(!confirm('Remove this monitor?'))return;
   const r=await fetch(API+'/api/monitors/'+idx,{method:'DELETE'});
   const d=await r.json();
-  if(r.ok){toast('Monitor removed. Restart the bot for changes to take effect.',true);loadConfig();fetchStatus();}
+  if(r.ok){toast('Monitor removed. Stop and start the bot to apply.',true);loadConfig();fetchStatus();}
   else toast(d.error||'Failed to remove',false);
 }
 

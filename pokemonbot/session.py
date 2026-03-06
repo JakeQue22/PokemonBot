@@ -41,7 +41,7 @@ def _build_connector(proxy: Proxy | None) -> aiohttp.BaseConnector:
     return ProxyConnector.from_url(proxy.url, ssl=False)
 
 
-def _domain_overrides(url: str) -> tuple[dict[str, str], dict[str, str]]:
+def _get_domain_overrides(url: str) -> tuple[dict[str, str], dict[str, str]]:
     """Return ``(extra_headers, cookies)`` for *url* based on domain rules."""
     host = urlparse(url).hostname or ""
     overrides = _DOMAIN_OVERRIDES.get(host, {})
@@ -92,7 +92,7 @@ async def fetch(
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``.
     """
     # Merge domain-specific overrides with caller-supplied headers.
-    domain_headers, domain_cookies = _domain_overrides(url)
+    domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
     last_error: Exception | None = None
