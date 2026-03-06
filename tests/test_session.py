@@ -145,3 +145,65 @@ class TestFetchUsesCurlCffi:
             result = await fetch("https://example.com", max_retries=1)
             assert mock_cffi.called
             assert result["status"] == 200
+
+
+class TestFetchProxyTimeout:
+    @pytest.mark.asyncio
+    async def test_proxy_timeout_used_when_proxy_present(self):
+        """When proxy_timeout is set and a proxy is used, the shorter timeout
+        should be passed to the fetcher instead of the main timeout."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        fake_response = {
+            "status": 200,
+            "body": "<html>OK</html>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_cffi:
+            await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                timeout=30.0,
+                proxy_timeout=10.0,
+                max_retries=1,
+            )
+            # The fetcher should have been called with the proxy_timeout (10s)
+            _, kwargs = mock_cffi.call_args
+            assert kwargs["timeout"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_direct_uses_main_timeout(self):
+        """Without a proxy, the main timeout should be used."""
+        from pokemonbot.session import fetch
+
+        fake_response = {
+            "status": 200,
+            "body": "<html>OK</html>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_cffi:
+            await fetch(
+                "https://example.com",
+                timeout=30.0,
+                proxy_timeout=10.0,
+                max_retries=1,
+            )
+            # No proxy pool → direct connection → main timeout used
+            _, kwargs = mock_cffi.call_args
+            assert kwargs["timeout"] == 30.0

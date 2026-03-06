@@ -97,6 +97,7 @@ async def _api_status(request: web.Request) -> web.Response:
                 "checks": ts.checks,
                 "alerts": ts.alerts,
                 "errors": ts.errors,
+                "successes": ts.successes,
                 "last_status": ts.last_status,
             })
     payload = {
@@ -727,7 +728,8 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
     <div class="page active" id="page-dashboard">
       <div class="stats">
         <div class="stat purple"><div class="num" id="st-monitors">0</div><div class="lbl">Monitors</div></div>
-        <div class="stat green"><div class="num" id="st-checks">0</div><div class="lbl">Total Checks</div></div>
+        <div class="stat purple"><div class="num" id="st-checks">0</div><div class="lbl">Total Checks</div></div>
+        <div class="stat green"><div class="num" id="st-successes">0</div><div class="lbl">Successes</div></div>
         <div class="stat yellow"><div class="num" id="st-alerts">0</div><div class="lbl">Alerts Sent</div></div>
         <div class="stat red"><div class="num" id="st-errors">0</div><div class="lbl">Errors</div></div>
       </div>
@@ -744,7 +746,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <div class="card" id="dash-tasks-card" style="display:none">
         <h2>Active Monitors</h2>
         <table class="tbl">
-          <thead><tr><th>Name</th><th>URL</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th></tr></thead>
           <tbody id="dash-tasks-body"></tbody>
         </table>
       </div>
@@ -782,7 +784,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <div class="card">
         <h2>Configured Monitors</h2>
         <table class="tbl" id="monitors-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:80px"></th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:80px"></th></tr></thead>
           <tbody id="monitors-body"></tbody>
         </table>
         <div id="monitors-empty" style="text-align:center;padding:2rem;color:var(--muted);font-size:.85rem">No monitors configured.</div>
@@ -998,10 +1000,11 @@ async function fetchStatus(){
     else{pill.className='status-pill off';lbl.textContent='Stopped';bs.disabled=false;bt.disabled=true;}
 
     /* Stats */
-    let checks=0,alerts=0,errors=0;
-    if(d.tasks)d.tasks.forEach(t=>{checks+=t.checks;alerts+=t.alerts;errors+=t.errors;});
+    let checks=0,alerts=0,errors=0,successes=0;
+    if(d.tasks)d.tasks.forEach(t=>{checks+=t.checks;alerts+=t.alerts;errors+=t.errors;successes+=t.successes||0;});
     document.getElementById('st-monitors').textContent=d.monitors;
     document.getElementById('st-checks').textContent=checks;
+    document.getElementById('st-successes').textContent=successes;
     document.getElementById('st-alerts').textContent=alerts;
     document.getElementById('st-errors').textContent=errors;
 
@@ -1015,7 +1018,7 @@ async function fetchStatus(){
         else if(t.last_status==='queue_active')badge='badge-yellow';
         else if(t.errors>0)badge='badge-red';
         return `<tr><td>${esc(t.name)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.url)}</td>`+
-        `<td>${t.checks}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td></tr>`;
+        `<td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td></tr>`;
       }).join('');
     }else{dc.style.display='none';}
 
@@ -1035,7 +1038,7 @@ function updateMonitorsPage(d){
     body.innerHTML=d.tasks.map((t,i)=>{
       let badge='badge-muted';if(t.last_status==='in_stock')badge='badge-green';else if(t.last_status==='queue_active')badge='badge-yellow';
       return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(t.url)}</a></td>`+
-      `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
+      `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
       `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     return;
@@ -1048,7 +1051,7 @@ function updateMonitorsPage(d){
     if(st==='in_stock')badge='badge-green';else if(st==='queue_active')badge='badge-yellow';
     return `<tr><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(m.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(m.url)}</a></td>`+
     `<td>${esc(m.site)}</td><td>${esc((m.keywords||[]).join(', ')||'–')}</td><td>${m.interval}s</td>`+
-    `<td>${rt.checks??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td>`+
+    `<td>${rt.checks??'–'}</td><td>${rt.successes??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td>`+
     `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
   }).join('');
 }

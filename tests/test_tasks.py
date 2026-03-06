@@ -17,6 +17,7 @@ class TestTaskState:
         assert state.checks == 0
         assert state.alerts == 0
         assert state.errors == 0
+        assert state.successes == 0
         assert state.last_status == ""
 
 
@@ -76,6 +77,7 @@ class TestTaskManager:
 
         assert state.checks == 1
         assert state.alerts == 1
+        assert state.successes == 1
         assert len(sent_alerts) == 1
         assert sent_alerts[0].status == "in_stock"
 
@@ -158,3 +160,56 @@ class TestTaskManager:
                 await manager._check_once(state, monitor)
 
         assert any("OK" in r.message and r.levelno == logging.INFO for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_check_once_ok_increments_successes(self):
+        """A 200 response with no alert should increment successes."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing special</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.successes == 1
+        assert state.errors == 0
+
+    @pytest.mark.asyncio
+    async def test_check_once_error_does_not_increment_successes(self):
+        """A connection error should not increment successes."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("timeout"),
+        ):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.successes == 0
+        assert state.errors == 1

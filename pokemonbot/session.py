@@ -212,6 +212,7 @@ async def fetch(
     proxy_pool: ProxyPool | None = None,
     user_agents: list[str] | None = None,
     timeout: float = 30.0,
+    proxy_timeout: float | None = None,
     extra_headers: dict[str, str] | None = None,
     max_retries: int = 3,
 ) -> dict[str, Any]:
@@ -221,6 +222,10 @@ async def fetch(
     does not spend minutes cycling through thousands of dead proxies.
     Failed proxies are placed on cooldown so they are automatically
     skipped on subsequent requests.
+
+    *proxy_timeout*, when set, overrides *timeout* for requests routed
+    through a proxy.  Public proxies are unreliable and a shorter timeout
+    (e.g. 10 s) prevents one dead proxy from blocking the whole cycle.
 
     When ``curl_cffi`` is installed the request impersonates a real Chrome
     browser (TLS fingerprint, HTTP/2 settings, etc.) which dramatically
@@ -251,19 +256,27 @@ async def fetch(
         else:
             proxy = None
 
+        # Use a shorter timeout for proxy requests so dead proxies don't
+        # block the monitoring cycle for minutes.
+        effective_timeout = (
+            proxy_timeout if (proxy is not None and proxy_timeout is not None)
+            else timeout
+        )
+
         try:
             logger.debug(
-                "Attempt %d/%d – GET %s via %s",
+                "Attempt %d/%d – GET %s via %s (timeout=%.0fs)",
                 attempt,
                 attempts,
                 url,
                 proxy or "direct",
+                effective_timeout,
             )
             result = await do_fetch(
                 url,
                 proxy=proxy,
                 user_agents=user_agents,
-                timeout=timeout,
+                timeout=effective_timeout,
                 headers=merged_headers or None,
                 cookies=domain_cookies or None,
             )

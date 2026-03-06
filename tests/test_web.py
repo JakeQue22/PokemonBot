@@ -653,3 +653,36 @@ class TestDashboard:
         resp = await client.get("/")
         text = await resp.text()
         assert "function logClass" in text
+
+    @pytest.mark.asyncio
+    async def test_index_contains_successes_stat_card(self, web_app, aiohttp_client):
+        """Dashboard should have a green Successes stat card."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert 'id="st-successes"' in text
+        assert ">Successes<" in text
+
+    @pytest.mark.asyncio
+    async def test_total_checks_card_is_not_green(self, web_app, aiohttp_client):
+        """Total Checks stat card should NOT be green (reserved for Successes)."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        # The Total Checks card should use purple, not green
+        assert 'stat purple"><div class="num" id="st-checks"' in text
+
+    @pytest.mark.asyncio
+    async def test_api_status_includes_successes(self, web_app, aiohttp_client):
+        """The /api/status endpoint should include successes in task data."""
+        client = await aiohttp_client(web_app)
+        # Start the bot so we get task states
+        resp = await client.post("/api/start")
+        assert resp.status == 200
+        resp = await client.get("/api/status")
+        data = await resp.json()
+        if data.get("tasks"):
+            for t in data["tasks"]:
+                assert "successes" in t
+        # Clean up
+        await client.post("/api/stop")

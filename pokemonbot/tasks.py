@@ -24,6 +24,7 @@ class TaskState:
     checks: int = 0
     alerts: int = 0
     errors: int = 0
+    successes: int = 0
 
 
 @dataclass
@@ -89,6 +90,7 @@ class TaskManager:
                 proxy_pool=self.proxy_pool,
                 user_agents=self.app_config.user_agents,
                 timeout=self.app_config.request_timeout,
+                proxy_timeout=self.app_config.proxies.timeout,
                 extra_headers=state.config.headers or None,
                 max_retries=self.app_config.max_retries,
             )
@@ -106,6 +108,7 @@ class TaskManager:
         if alert is None:
             status_code = response.get("status", 0)
             if 200 <= status_code < 400:
+                state.successes += 1
                 logger.info(
                     "Monitor [%s] check #%d OK (HTTP %d) – no change",
                     state.config.name, state.checks, status_code,
@@ -121,8 +124,10 @@ class TaskManager:
         if alert.status != state.last_status:
             state.last_status = alert.status
             state.alerts += 1
+            state.successes += 1
             await self.notifier.send(alert)
         else:
+            state.successes += 1
             logger.debug(
                 "Monitor [%s] status unchanged (%s)", state.config.name, alert.status
             )
