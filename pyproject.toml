@@ -13,6 +13,7 @@ dependencies = [
     "aiohttp>=3.9,<4",
     "aiohttp-socks>=0.8,<1",
     "Brotli>=1.1,<2",
+    "curl_cffi>=0.7,<1",
     "pyyaml>=6.0,<7",
     "click>=8.1,<9",
     "rich>=13.0,<14",

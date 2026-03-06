@@ -1,11 +1,19 @@
 """Tests for the session module."""
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from pokemonbot.proxy import Proxy
-from pokemonbot.session import _build_connector, _get_domain_overrides, _random_user_agent, create_session
+from pokemonbot.session import (
+    _build_connector,
+    _get_domain_overrides,
+    _random_user_agent,
+    _HAS_CURL_CFFI,
+    _IMPERSONATE_BROWSERS,
+    create_session,
+)
 
 
 class TestRandomUserAgent:
@@ -90,3 +98,41 @@ class TestBrotliSupport:
         session = await create_session(timeout=5.0)
         assert "br" in session.headers.get("Accept-Encoding", "")
         await session.close()
+
+
+class TestCurlCffiIntegration:
+    def test_curl_cffi_available(self):
+        """curl_cffi should be importable when installed."""
+        assert _HAS_CURL_CFFI is True
+
+    def test_impersonate_browsers_defined(self):
+        """At least one browser impersonation target should be configured."""
+        assert len(_IMPERSONATE_BROWSERS) >= 1
+        for b in _IMPERSONATE_BROWSERS:
+            assert b.startswith("chrome")
+
+
+class TestFetchUsesCurlCffi:
+    @pytest.mark.asyncio
+    async def test_fetch_selects_curl_cffi_when_available(self):
+        """When curl_cffi is available, fetch() should use _fetch_with_curl_cffi."""
+        from pokemonbot.session import fetch, _HAS_CURL_CFFI
+
+        if not _HAS_CURL_CFFI:
+            pytest.skip("curl_cffi not installed")
+
+        fake_response = {
+            "status": 200,
+            "body": "<html>OK</html>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_cffi:
+            result = await fetch("https://example.com", max_retries=1)
+            assert mock_cffi.called
+            assert result["status"] == 200

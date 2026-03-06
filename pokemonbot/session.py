@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import ssl
@@ -14,6 +15,25 @@ from aiohttp_socks import ProxyConnector
 from pokemonbot.proxy import Proxy, ProxyPool
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# curl_cffi – optional but strongly preferred for anti-bot bypass
+# ---------------------------------------------------------------------------
+try:
+    from curl_cffi.requests import AsyncSession as CffiAsyncSession
+
+    _HAS_CURL_CFFI = True
+except ImportError:  # pragma: no cover
+    _HAS_CURL_CFFI = False
+
+# Browser versions to impersonate.  curl_cffi supports strings like
+# ``"chrome131"`` which reproduce the *exact* TLS/JA3/HTTP2 fingerprint
+# of that browser, defeating Cloudflare & Akamai bot detection.
+_IMPERSONATE_BROWSERS: list[str] = [
+    "chrome131",
+    "chrome130",
+    "chrome124",
+]
 
 
 def _default_ssl_context() -> ssl.SSLContext:
@@ -101,6 +121,91 @@ async def create_session(
     )
 
 
+# ---------------------------------------------------------------------------
+# curl_cffi-based fetch (preferred – impersonates real Chrome fingerprint)
+# ---------------------------------------------------------------------------
+
+async def _fetch_with_curl_cffi(
+    url: str,
+    *,
+    proxy: Proxy | None = None,
+    user_agents: list[str] | None = None,
+    timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Fetch *url* using curl_cffi with Chrome browser impersonation.
+
+    This gives the request a genuine Chrome TLS/JA3/HTTP2 fingerprint,
+    which is critical for bypassing Cloudflare and Akamai bot detection
+    on sites like pokemoncenter.com.
+    """
+    browser = random.choice(_IMPERSONATE_BROWSERS)
+    ua = _random_user_agent(user_agents or [])
+
+    req_headers: dict[str, str] = {}
+    if ua:
+        req_headers["User-Agent"] = ua
+    if headers:
+        req_headers.update(headers)
+
+    proxy_url = proxy.url if proxy else None
+
+    async with CffiAsyncSession() as session:
+        resp = await session.get(
+            url,
+            headers=req_headers or None,
+            cookies=cookies or None,
+            proxy=proxy_url,
+            timeout=timeout,
+            impersonate=browser,
+            allow_redirects=True,
+            verify=proxy is None,  # skip TLS verification through proxies
+        )
+        return {
+            "status": resp.status_code,
+            "body": resp.text,
+            "headers": dict(resp.headers),
+            "url": str(resp.url),
+        }
+
+
+# ---------------------------------------------------------------------------
+# aiohttp-based fetch (fallback when curl_cffi is not available)
+# ---------------------------------------------------------------------------
+
+async def _fetch_with_aiohttp(
+    url: str,
+    *,
+    proxy: Proxy | None = None,
+    user_agents: list[str] | None = None,
+    timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Fetch *url* using plain aiohttp (no browser fingerprint impersonation)."""
+    session = await create_session(
+        proxy=proxy,
+        user_agents=user_agents,
+        timeout=timeout,
+        headers=headers,
+        cookies=cookies,
+    )
+    async with session:
+        async with session.get(url, allow_redirects=True) as resp:
+            body = await resp.text()
+            return {
+                "status": resp.status,
+                "body": body,
+                "headers": dict(resp.headers),
+                "url": str(resp.url),
+            }
+
+
+# ---------------------------------------------------------------------------
+# Public fetch() – retries across proxies with jitter
+# ---------------------------------------------------------------------------
+
 async def fetch(
     url: str,
     *,
@@ -117,6 +222,10 @@ async def fetch(
     Failed proxies are placed on cooldown so they are automatically
     skipped on subsequent requests.
 
+    When ``curl_cffi`` is installed the request impersonates a real Chrome
+    browser (TLS fingerprint, HTTP/2 settings, etc.) which dramatically
+    reduces 403 blocks from Cloudflare / Akamai.
+
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``.
     """
     # Merge domain-specific overrides with caller-supplied headers.
@@ -127,6 +236,9 @@ async def fetch(
     # want to try every single proxy in one call.  The cooldown mechanism
     # ensures persistently-bad proxies are skipped on the next cycle.
     attempts = max_retries
+
+    # Choose the fetcher implementation.
+    do_fetch = _fetch_with_curl_cffi if _HAS_CURL_CFFI else _fetch_with_aiohttp
 
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -139,30 +251,23 @@ async def fetch(
         else:
             proxy = None
 
-        session = await create_session(
-            proxy=proxy,
-            user_agents=user_agents,
-            timeout=timeout,
-            headers=merged_headers or None,
-            cookies=domain_cookies or None,
-        )
         try:
-            async with session:
-                logger.debug(
-                    "Attempt %d/%d – GET %s via %s",
-                    attempt,
-                    attempts,
-                    url,
-                    proxy or "direct",
-                )
-                async with session.get(url, allow_redirects=True) as resp:
-                    body = await resp.text()
-                    return {
-                        "status": resp.status,
-                        "body": body,
-                        "headers": dict(resp.headers),
-                        "url": str(resp.url),
-                    }
+            logger.debug(
+                "Attempt %d/%d – GET %s via %s",
+                attempt,
+                attempts,
+                url,
+                proxy or "direct",
+            )
+            result = await do_fetch(
+                url,
+                proxy=proxy,
+                user_agents=user_agents,
+                timeout=timeout,
+                headers=merged_headers or None,
+                cookies=domain_cookies or None,
+            )
+            return result
         except Exception as exc:
             last_error = exc
             logger.warning(
@@ -170,6 +275,12 @@ async def fetch(
             )
             if proxy and proxy_pool:
                 proxy_pool.mark_failed(proxy)
+
+            # Small random jitter between retries to look more human-like
+            # and avoid hammering the target in a tight loop.
+            if attempt < attempts:
+                jitter = random.uniform(0.5, 2.0)
+                await asyncio.sleep(jitter)
 
     raise ConnectionError(
         f"All {attempts} attempts failed for {url}"
