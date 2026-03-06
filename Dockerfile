@@ -7,10 +7,14 @@ COPY pyproject.toml README.md ./
 COPY pokemonbot/ pokemonbot/
 RUN pip install --no-cache-dir .
 
-# Config and proxy files should be bind-mounted via docker-compose;
-# do NOT declare them as VOLUME (Docker creates directories for missing
-# volume targets which causes EBUSY errors when the app tries to write files).
+# Seed empty config/proxy files so bind-mounts have file targets
+# (Docker creates directories when the host path is missing).
+RUN touch /app/proxies.txt
+
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3005
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["pokemonbot", "web", "--host", "0.0.0.0", "--port", "3005"]

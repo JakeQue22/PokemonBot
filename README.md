@@ -43,6 +43,11 @@ pokemonbot web          # opens http://localhost:3005
 ```bash
 # Copy the example config
 cp config.example.yaml config.yaml
+
+# Create an empty proxy file (required before first run –
+# Docker creates a directory if this file is missing on the host)
+touch proxies.txt
+
 # Edit config.yaml with your monitors, then:
 docker compose up -d    # dashboard at http://localhost:3005
 ```
