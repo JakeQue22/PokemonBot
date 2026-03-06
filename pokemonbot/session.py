@@ -109,15 +109,31 @@ async def fetch(
 ) -> dict[str, Any]:
     """Fetch a URL with automatic proxy rotation on failure.
 
+    When a *proxy_pool* is provided the function cycles through **all**
+    available (non-cooldown) proxies before giving up, so ``max_retries``
+    only applies when no proxy pool is used.  Failed proxies are placed on
+    cooldown so they are automatically skipped on subsequent requests.
+
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``.
     """
     # Merge domain-specific overrides with caller-supplied headers.
     domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
+    # When we have a proxy pool, try every available proxy (not just 3).
+    attempts = proxy_pool.size if proxy_pool else max_retries
+
     last_error: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        proxy = proxy_pool.next() if proxy_pool else None
+    for attempt in range(1, attempts + 1):
+        if proxy_pool:
+            proxy = proxy_pool.next_available()
+            if proxy is None:
+                # All proxies are on cooldown
+                logger.warning("All %d proxies on cooldown for %s", proxy_pool.size, url)
+                break
+        else:
+            proxy = None
+
         session = await create_session(
             proxy=proxy,
             user_agents=user_agents,
@@ -130,7 +146,7 @@ async def fetch(
                 logger.debug(
                     "Attempt %d/%d – GET %s via %s",
                     attempt,
-                    max_retries,
+                    attempts,
                     url,
                     proxy or "direct",
                 )
@@ -145,11 +161,11 @@ async def fetch(
         except Exception as exc:
             last_error = exc
             logger.warning(
-                "Attempt %d/%d failed for %s: %s", attempt, max_retries, url, exc
+                "Attempt %d/%d failed for %s: %s", attempt, attempts, url, exc
             )
             if proxy and proxy_pool:
                 proxy_pool.mark_failed(proxy)
 
     raise ConnectionError(
-        f"All {max_retries} attempts failed for {url}"
+        f"All {attempts} attempts failed for {url}"
     ) from last_error

@@ -145,9 +145,19 @@ def ensure_proxy_file(path: str | Path) -> Path:
 
 
 class ProxyPool:
-    """Thread-safe, round-robin proxy pool with optional shuffle and per-proxy stats."""
+    """Thread-safe, round-robin proxy pool with optional shuffle and per-proxy stats.
 
-    def __init__(self, proxies: list[Proxy], *, shuffle: bool = True) -> None:
+    Failed proxies are placed on a cooldown so they are skipped by
+    :meth:`next_available` for *cooldown_seconds* (default 120 s).
+    """
+
+    def __init__(
+        self,
+        proxies: list[Proxy],
+        *,
+        shuffle: bool = True,
+        cooldown_seconds: float = 120.0,
+    ) -> None:
         if not proxies:
             raise ValueError("Proxy pool requires at least one proxy")
         pool = list(proxies)
@@ -156,9 +166,12 @@ class ProxyPool:
         self._proxies = pool
         self._cycle: Iterator[Proxy] = itertools.cycle(self._proxies)
         self._failed: set[str] = set()
+        self._cooldown_seconds = cooldown_seconds
         # Per-proxy counters keyed by proxy URL
         self._requests: dict[str, int] = {p.url: 0 for p in self._proxies}
         self._failures: dict[str, int] = {p.url: 0 for p in self._proxies}
+        # Timestamp of last failure per proxy URL (monotonic clock)
+        self._fail_times: dict[str, float] = {}
 
     @property
     def size(self) -> int:
@@ -169,16 +182,36 @@ class ProxyPool:
         return list(self._proxies)
 
     def next(self) -> Proxy:
-        """Return the next proxy in the rotation."""
+        """Return the next proxy in the rotation (ignores cooldown)."""
         proxy = next(self._cycle)
         self._requests[proxy.url] = self._requests.get(proxy.url, 0) + 1
         return proxy
 
+    def next_available(self) -> Proxy | None:
+        """Return the next proxy that is **not** on cooldown.
+
+        Scans up to ``len(pool)`` candidates.  Returns ``None`` when every
+        proxy is currently on cooldown.
+        """
+        import time
+
+        now = time.monotonic()
+        for _ in range(len(self._proxies)):
+            proxy = next(self._cycle)
+            fail_time = self._fail_times.get(proxy.url, 0.0)
+            if now - fail_time >= self._cooldown_seconds:
+                self._requests[proxy.url] = self._requests.get(proxy.url, 0) + 1
+                return proxy
+        return None
+
     def mark_failed(self, proxy: Proxy) -> None:
-        """Record a proxy as failed (for informational purposes)."""
+        """Record a proxy as failed and start its cooldown timer."""
+        import time
+
         self._failed.add(proxy.url)
         self._failures[proxy.url] = self._failures.get(proxy.url, 0) + 1
-        logger.debug("Proxy marked as failed: %s", proxy.url)
+        self._fail_times[proxy.url] = time.monotonic()
+        logger.debug("Proxy marked as failed (cooldown %ds): %s", self._cooldown_seconds, proxy.url)
 
     @property
     def failed_count(self) -> int:
