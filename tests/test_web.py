@@ -1,10 +1,12 @@
 """Tests for the web dashboard module."""
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
+from pokemonbot.proxy import Proxy
 from pokemonbot.web import create_web_app
 
 
@@ -447,3 +449,50 @@ class TestDashboard:
         resp = await client.get("/")
         text = await resp.text()
         assert "TestPortal" in text
+
+    # ---- Fetch public proxies tests ----
+
+    @pytest.mark.asyncio
+    async def test_fetch_public_proxies_save_error_returns_json(
+        self, web_app, aiohttp_client
+    ):
+        """When file I/O fails after fetching, the endpoint must still return JSON."""
+        client = await aiohttp_client(web_app)
+        fake_proxies = [
+            Proxy(protocol="http", host="1.2.3.4", port=8080),
+        ]
+        with patch(
+            "pokemonbot.web.fetch_public_proxies",
+            new_callable=AsyncMock,
+            return_value=fake_proxies,
+        ), patch(
+            "pokemonbot.web.ensure_proxy_file",
+            side_effect=PermissionError("Permission denied: proxies.txt"),
+        ):
+            resp = await client.post("/api/proxies/fetch-public")
+            assert resp.status == 500
+            data = await resp.json()
+            assert "error" in data
+            assert "could not be saved" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_public_proxies_success_returns_json(
+        self, web_app, aiohttp_client
+    ):
+        """When fetching and saving succeed, the endpoint returns valid JSON."""
+        client = await aiohttp_client(web_app)
+        fake_proxies = [
+            Proxy(protocol="http", host="1.2.3.4", port=8080),
+            Proxy(protocol="socks5", host="5.6.7.8", port=1080),
+        ]
+        with patch(
+            "pokemonbot.web.fetch_public_proxies",
+            new_callable=AsyncMock,
+            return_value=fake_proxies,
+        ):
+            resp = await client.post("/api/proxies/fetch-public")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["fetched"] == 2
+            assert data["total"] >= 2

@@ -541,13 +541,20 @@ async def _api_proxies_fetch_public(request: web.Request) -> web.Response:
             {"error": "No proxies could be fetched from public sources"}, status=400
         )
 
-    proxy_path = ensure_proxy_file(state.config.proxies.file)
-    # Merge with any existing proxies, de-duplicate by URL
-    existing = load_proxies(proxy_path) if proxy_path.is_file() else []
-    existing_urls = {p.url for p in existing}
-    new_proxies = [p for p in proxies if p.url not in existing_urls]
-    merged = existing + new_proxies
-    save_proxies(merged, proxy_path)
+    try:
+        proxy_path = ensure_proxy_file(state.config.proxies.file)
+        # Merge with any existing proxies, de-duplicate by URL
+        existing = load_proxies(proxy_path) if proxy_path.is_file() else []
+        existing_urls = {p.url for p in existing}
+        new_proxies = [p for p in proxies if p.url not in existing_urls]
+        merged = existing + new_proxies
+        save_proxies(merged, proxy_path)
+    except Exception as exc:
+        logger.exception("Failed to save fetched proxies")
+        return web.json_response(
+            {"error": f"Proxies fetched but could not be saved: {exc}"}, status=500
+        )
+
     logger.info("Public proxies fetched: %d new, %d total", len(new_proxies), len(merged))
     return web.json_response({
         "status": "ok",
@@ -1242,7 +1249,11 @@ async function fetchPublicProxies(){
   toast('Fetching public proxies from multiple sources… this may take up to 20 seconds',true);
   try{
     const r=await fetch(API+'/api/proxies/fetch-public',{method:'POST'});
-    const d=await r.json();
+    const text=await r.text();
+    let d;
+    try{d=JSON.parse(text);}catch(pe){
+      toast('Server error (HTTP '+r.status+'): '+text.substring(0,200),false);return;
+    }
     if(r.ok){toast('✅ Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
     else toast(d.error||'Failed to fetch public proxies',false);
   }catch(e){toast('Network error fetching proxies: '+e.message,false);}
