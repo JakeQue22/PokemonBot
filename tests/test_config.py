@@ -1,5 +1,8 @@
 """Tests for the config module."""
 
+import errno
+from unittest.mock import patch
+
 from pokemonbot.config import AppConfig, MonitorConfig, load_config, save_config
 
 
@@ -157,3 +160,15 @@ class TestSaveConfig:
         assert len(reloaded.monitors) == 1
         assert reloaded.monitors[0].name == "new"
         assert reloaded.monitors[0].url == "https://new.example.com"
+
+    def test_save_falls_back_on_ebusy(self, tmp_path):
+        """When os.replace raises EBUSY (Docker bind-mount), save_config falls back to direct write."""
+        f = tmp_path / "config.yaml"
+        f.write_text("monitors: []\n")
+
+        cfg = AppConfig(concurrency=77)
+        with patch("pokemonbot.config.os.replace", side_effect=OSError(errno.EBUSY, "Device or resource busy")):
+            save_config(cfg, f)
+
+        reloaded = load_config(f)
+        assert reloaded.concurrency == 77

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import tempfile
@@ -209,6 +210,8 @@ def save_config(cfg: AppConfig, path: str | Path) -> None:
     content = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     # Atomic write: temp file in the same directory, then rename.
+    # Falls back to a direct (non-atomic) write when the destination is a
+    # Docker bind-mount and os.replace() raises EBUSY (errno 16).
     fd, tmp = tempfile.mkstemp(
         dir=str(dest.parent), prefix=".config_", suffix=".tmp",
     )
@@ -218,10 +221,15 @@ def save_config(cfg: AppConfig, path: str | Path) -> None:
         os.close(fd)
     try:
         os.replace(tmp, str(dest))
-    except OSError:
+    except OSError as exc:
+        # EBUSY – the target file is a Docker bind-mount; fall back to a
+        # direct overwrite of the existing file contents.
         try:
             os.unlink(tmp)
         except OSError:
             pass
-        raise
+        if exc.errno == errno.EBUSY:
+            dest.write_text(content, encoding="utf-8")
+        else:
+            raise
     logger.info("Configuration saved to %s", dest)
