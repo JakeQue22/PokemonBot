@@ -7,8 +7,9 @@ COPY pyproject.toml README.md ./
 COPY pokemonbot/ pokemonbot/
 RUN pip install --no-cache-dir .
 
-# Default config and proxy files can be mounted as volumes
-VOLUME ["/app/config.yaml", "/app/proxies.txt"]
+# Config and proxy files should be bind-mounted via docker-compose;
+# do NOT declare them as VOLUME (Docker creates directories for missing
+# volume targets which causes EBUSY errors when the app tries to write files).
 
 EXPOSE 3005
 

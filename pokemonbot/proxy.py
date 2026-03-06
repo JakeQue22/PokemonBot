@@ -93,25 +93,52 @@ def load_proxies(path: str | Path) -> list[Proxy]:
 
 
 def save_proxies(proxies: list[Proxy], path: str | Path) -> None:
-    """Write proxies back to a text file (one per line)."""
+    """Write proxies back to a text file (one per line).
+
+    Uses atomic write (temp file + rename) to avoid *EBUSY* or partial-write
+    issues when the file is held open by another process or Docker volume.
+    """
+    import os
+    import tempfile
+
     content = "\n".join(p.url for p in proxies)
     if content:
         content += "\n"
-    Path(path).write_text(content)
+
+    dest = Path(path)
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(dest.parent), prefix=".proxies_", suffix=".tmp"
+        )
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(dest))
+    except OSError:
+        # Fallback: direct write (e.g. when rename across filesystems fails)
+        dest.write_text(content)
 
 
 def ensure_proxy_file(path: str | Path) -> Path:
-    """Ensure *path* is a regular file, creating it if necessary.
+    """Ensure *path* resolves to a regular file, creating it if necessary.
 
-    If the path is a directory (e.g. Docker volume-mount placeholder),
-    it is removed first and replaced with an empty file.
+    If the path is a directory (e.g. Docker volume-mount placeholder that
+    cannot be removed), a ``proxies.txt`` file is created *inside* it and
+    that path is returned instead.
     """
     import shutil
 
     p = Path(path)
     if p.is_dir():
-        logger.warning("Proxy path %s is a directory – replacing with empty file", p)
-        shutil.rmtree(p)
+        logger.warning("Proxy path %s is a directory – attempting to replace", p)
+        try:
+            shutil.rmtree(p)
+        except OSError:
+            # Mount point (e.g. Docker volume) – cannot remove.
+            # Fall back to writing a file inside the directory.
+            p = p / "proxies.txt"
+            logger.warning("Cannot remove directory mount; using %s instead", p)
     if not p.exists():
         p.write_text("")
     return p

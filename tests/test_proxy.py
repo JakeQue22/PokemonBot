@@ -1,5 +1,7 @@
 """Tests for the proxy module."""
 
+from unittest.mock import patch
+
 from pokemonbot.proxy import (
     Proxy,
     ProxyPool,
@@ -163,3 +165,13 @@ class TestEnsureProxyFile:
         result = ensure_proxy_file(f)
         assert result.is_file()
         assert "1.1.1.1" in result.read_text()
+
+    def test_falls_back_to_file_inside_immovable_directory(self, tmp_path):
+        """When the directory cannot be removed (e.g. Docker mount), use a file inside it."""
+        d = tmp_path / "proxies.txt"
+        d.mkdir()
+        with patch("shutil.rmtree", side_effect=OSError("Device or resource busy")):
+            result = ensure_proxy_file(d)
+        assert result.is_file()
+        assert result.parent == d  # file is INSIDE the directory
+        assert result.name == "proxies.txt"
