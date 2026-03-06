@@ -202,65 +202,114 @@ _PUBLIC_PROXY_SOURCES: list[dict[str, str]] = [
         "url": "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
         "protocol": "socks5",
     },
+    {
+        "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+        "protocol": "http",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+        "protocol": "socks5",
+    },
+    {
+        "url": "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+        "protocol": "http",
+    },
 ]
 
 
-async def fetch_public_proxies(*, max_per_source: int = 80) -> list[Proxy]:
+async def _fetch_source(
+    session: Any,
+    source: dict[str, str],
+    seen: set[str],
+    max_per_source: int,
+) -> list[Proxy]:
+    """Fetch proxies from a single source URL."""
+    import aiohttp
+
+    proxies: list[Proxy] = []
+    url = source["url"]
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(
+                    "Public proxy source returned %d: %s", resp.status, url,
+                )
+                return proxies
+            text = await resp.text()
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return proxies
+
+    count = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            parts = line.split(":")
+            if len(parts) != 2:
+                continue
+            host, port_str = parts
+            port = int(port_str)
+            proxy_url = f"{source['protocol']}://{host}:{port}"
+            if proxy_url in seen:
+                continue
+            seen.add(proxy_url)
+            proxies.append(Proxy(
+                protocol=source["protocol"],
+                host=host,
+                port=port,
+            ))
+            count += 1
+            if count >= max_per_source:
+                break
+        except (ValueError, IndexError):
+            continue
+
+    logger.info("Fetched %d proxies from %s", count, url)
+    return proxies
+
+
+async def fetch_public_proxies(*, max_per_source: int = 150) -> list[Proxy]:
     """Fetch free proxy lists from public GitHub-hosted sources.
 
-    Returns a de-duplicated list of :class:`Proxy` objects (up to
-    *max_per_source* per source to keep the list manageable).
+    Each source is fetched concurrently with its own timeout so a single
+    slow source does not block the others.  Returns a de-duplicated list
+    of :class:`Proxy` objects (up to *max_per_source* per source).
     """
+    import asyncio
+
     import aiohttp
 
     seen: set[str] = set()
-    proxies: list[Proxy] = []
+    all_proxies: list[Proxy] = []
+    successful_sources = 0
 
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=15),
-    ) as session:
-        for source in _PUBLIC_PROXY_SOURCES:
-            try:
-                async with session.get(source["url"]) as resp:
-                    if resp.status != 200:
-                        logger.warning(
-                            "Public proxy source returned %d: %s",
-                            resp.status,
-                            source["url"],
-                        )
-                        continue
-                    text = await resp.text()
-            except Exception as exc:
-                logger.warning("Failed to fetch %s: %s", source["url"], exc)
-                continue
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            _fetch_source(session, source, seen, max_per_source)
+            for source in _PUBLIC_PROXY_SOURCES
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            count = 0
-            for line in text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                # Lines are typically ``ip:port``
-                try:
-                    parts = line.split(":")
-                    if len(parts) != 2:
-                        continue
-                    host, port_str = parts
-                    port = int(port_str)
-                    url = f"{source['protocol']}://{host}:{port}"
-                    if url in seen:
-                        continue
-                    seen.add(url)
-                    proxies.append(Proxy(
-                        protocol=source["protocol"],
-                        host=host,
-                        port=port,
-                    ))
-                    count += 1
-                    if count >= max_per_source:
-                        break
-                except (ValueError, IndexError):
-                    continue
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Public proxy source failed: %s – %s",
+                    _PUBLIC_PROXY_SOURCES[i]["url"],
+                    result,
+                )
+            elif result:
+                all_proxies.extend(result)
+                successful_sources += 1
 
-    logger.info("Fetched %d unique public proxies from %d sources",
-                len(proxies), len(_PUBLIC_PROXY_SOURCES))
-    return proxies
+    logger.info(
+        "Fetched %d unique public proxies from %d/%d sources",
+        len(all_proxies),
+        successful_sources,
+        len(_PUBLIC_PROXY_SOURCES),
+    )
+    return all_proxies

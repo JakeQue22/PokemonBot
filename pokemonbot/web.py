@@ -843,7 +843,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           </div>
 
           <div class="controls" style="margin-bottom:.8rem">
-            <button class="btn btn-accent" onclick="fetchPublicProxies()">🌍 Fetch Public Proxies</button>
+            <button class="btn btn-accent" id="btn-fetch-proxies" onclick="fetchPublicProxies()">🌍 Fetch Public Proxies</button>
             <button class="btn btn-outline" onclick="refreshProxies()">🔄 Refresh</button>
           </div>
 
@@ -1237,11 +1237,16 @@ async function bulkSaveProxies(){
   }else toast(d.error||'Failed',false);
 }
 async function fetchPublicProxies(){
-  toast('Fetching public proxies… this may take a moment',true);
-  const r=await fetch(API+'/api/proxies/fetch-public',{method:'POST'});
-  const d=await r.json();
-  if(r.ok){toast('Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
-  else toast(d.error||'Failed to fetch',false);
+  const btn=document.getElementById('btn-fetch-proxies');
+  btn.disabled=true;btn.textContent='⏳ Fetching proxies…';
+  toast('Fetching public proxies from multiple sources… this may take up to 20 seconds',true);
+  try{
+    const r=await fetch(API+'/api/proxies/fetch-public',{method:'POST'});
+    const d=await r.json();
+    if(r.ok){toast('✅ Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
+    else toast(d.error||'Failed to fetch public proxies',false);
+  }catch(e){toast('Network error fetching proxies: '+e.message,false);}
+  finally{btn.disabled=false;btn.textContent='🌍 Fetch Public Proxies';}
 }
 
 /* ---- Config viewer ---- */
