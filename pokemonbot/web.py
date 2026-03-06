@@ -876,7 +876,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           <div class="stats" style="margin-bottom:.8rem">
             <div class="stat purple"><div class="num" id="px-total">0</div><div class="lbl">Total Proxies</div></div>
             <div class="stat green"><div class="num" id="px-requests">0</div><div class="lbl">Total Requests</div></div>
-            <div class="stat green"><div class="num" id="px-successes">0</div><div class="lbl">Total Successes</div></div>
+            <div class="stat green"><div class="num" id="px-successes">0</div><div class="lbl">Success</div></div>
             <div class="stat red"><div class="num" id="px-failures">0</div><div class="lbl">Total Failures</div></div>
           </div>
 
@@ -1111,7 +1111,7 @@ async function saveEditMonitor(){
 }
 
 /* ---- Logs ---- */
-const _ERR_RE=/Access denied|failed|\b403\b|connection error|\bdenied\b|timed?\s*out/i;
+const _ERR_RE=/Access denied|failed|\b403\b|connection error|timed?\s*out/i;
 const _OK_RE=/\bOK\b|check #\d+ OK|started|stopped|saved|added|removed|updated|fetched|sent/i;
 function logClass(l){
   if(l.includes('[ERROR]'))return 'log-error';

@@ -110,6 +110,11 @@ class TaskManager:
                     "Monitor [%s] check #%d OK (HTTP %d) – no change",
                     state.config.name, state.checks, status_code,
                 )
+            else:
+                logger.debug(
+                    "Monitor [%s] check #%d (HTTP %d) – no change",
+                    state.config.name, state.checks, status_code,
+                )
             return
 
         # Only notify when status changes to avoid spam.

@@ -609,7 +609,7 @@ class TestDashboard:
         resp = await client.get("/")
         text = await resp.text()
         assert 'id="px-successes"' in text
-        assert "Total Successes" in text
+        assert ">Success<" in text
 
     @pytest.mark.asyncio
     async def test_general_settings_max_retries_roundtrip(self, web_app, aiohttp_client):
