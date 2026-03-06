@@ -91,8 +91,10 @@ class TestProxyPool:
         assert len(stats) == 2
         assert stats[0]["requests"] == 1
         assert stats[0]["failures"] == 0
+        assert stats[0]["successes"] == 1
         assert stats[1]["requests"] == 1
         assert stats[1]["failures"] == 1
+        assert stats[1]["successes"] == 0
 
     def test_proxies_property(self):
         proxies = self._make_proxies(3)

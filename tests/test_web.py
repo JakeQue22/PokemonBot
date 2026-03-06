@@ -577,3 +577,27 @@ class TestDashboard:
         assert reloaded.email.enabled is True
         assert reloaded.email.smtp_host == "smtp.test.com"
         assert reloaded.email.smtp_port == 587
+
+    @pytest.mark.asyncio
+    async def test_proxies_list_includes_successes(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        await client.post("/api/proxies", json={"proxy": "http://5.6.7.8:9090"})
+        resp = await client.get("/api/proxies")
+        data = await resp.json()
+        proxy = next(p for p in data["proxies"] if p["host"] == "5.6.7.8")
+        assert "successes" in proxy
+        assert proxy["successes"] == 0
+
+    @pytest.mark.asyncio
+    async def test_index_contains_copy_last_20_button(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert "Copy Last 20" in text
+
+    @pytest.mark.asyncio
+    async def test_index_contains_successes_column(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert "<th>Successes</th>" in text

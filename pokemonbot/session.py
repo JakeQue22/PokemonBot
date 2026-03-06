@@ -53,7 +53,10 @@ def _build_connector(proxy: Proxy | None) -> aiohttp.BaseConnector:
     ssl_ctx = _default_ssl_context()
     if proxy is None:
         return aiohttp.TCPConnector(ssl=ssl_ctx)
-    return ProxyConnector.from_url(proxy.url, ssl=ssl_ctx)
+    # Public/untrusted proxies often intercept TLS with their own
+    # certificates causing CERTIFICATE_VERIFY_FAILED.  Disable strict
+    # verification when traffic is routed through an external proxy.
+    return ProxyConnector.from_url(proxy.url, ssl=False)
 
 
 def _get_domain_overrides(url: str) -> tuple[dict[str, str], dict[str, str]]:

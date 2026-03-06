@@ -230,6 +230,7 @@ class ProxyPool:
                 "port": p.port,
                 "requests": self._requests.get(p.url, 0),
                 "failures": self._failures.get(p.url, 0),
+                "successes": self._requests.get(p.url, 0) - self._failures.get(p.url, 0),
             }
             for p in self._proxies
         ]

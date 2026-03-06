@@ -432,7 +432,7 @@ async def _api_proxies_list(request: web.Request) -> web.Response:
         loaded = load_proxies(proxy_path) if proxy_path.is_file() else []
         data = [
             {"url": p.url, "protocol": p.protocol, "host": p.host, "port": p.port,
-             "requests": 0, "failures": 0}
+             "requests": 0, "failures": 0, "successes": 0}
             for p in loaded
         ]
     return web.json_response({"proxies": data})
@@ -824,6 +824,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <input type="checkbox" id="log-autoscroll" checked> Auto-scroll
           </label>
           <button class="btn btn-outline btn-sm" onclick="clearLogs()">🗑️ Clear</button>
+          <button class="btn btn-outline btn-sm" onclick="copyLast20Logs()">📋 Copy Last 20</button>
         </div>
         <div id="log-box"></div>
       </div>
@@ -878,7 +879,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           </div>
 
           <table class="tbl" id="proxy-table">
-            <thead><tr><th>#</th><th>Protocol</th><th>Host</th><th>Port</th><th>Requests</th><th>Failures</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Protocol</th><th>Host</th><th>Port</th><th>Requests</th><th>Successes</th><th>Failures</th><th></th></tr></thead>
             <tbody id="proxy-body"></tbody>
           </table>
           <div id="proxy-empty" style="text-align:center;padding:1.5rem;color:var(--muted);font-size:.85rem">No proxies configured. Click <b>Fetch Public Proxies</b> to get started.</div>
@@ -1138,6 +1139,10 @@ async function clearLogs(){
   document.getElementById('dash-log-box').textContent='';
   toast('Logs cleared',true);
 }
+function copyLast20Logs(){
+  const lines=allLogs.slice(-20).join('\n');
+  navigator.clipboard.writeText(lines).then(()=>toast('Copied last 20 log lines',true)).catch(err=>{console.error('Clipboard write failed:',err);toast('Copy failed',false);});
+}
 
 /* ---- Bot controls ---- */
 async function startBot(){
@@ -1235,8 +1240,9 @@ async function refreshProxies(){
     empty.style.display='none';
     body.innerHTML=list.map((p,i)=>{
       const failCls=p.failures>0?' style="color:var(--accent2)"':'';
+      const succCls=p.successes>0?' style="color:var(--accent)"':'';
       return `<tr><td>${i+1}</td><td>${esc(p.protocol)}</td><td>${esc(p.host)}</td><td>${p.port}</td>`+
-      `<td>${p.requests}</td><td${failCls}>${p.failures}</td>`+
+      `<td>${p.requests}</td><td${succCls}>${p.successes}</td><td${failCls}>${p.failures}</td>`+
       `<td><button class="btn btn-outline btn-sm" onclick="removeProxy(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     /* Also populate bulk textarea */

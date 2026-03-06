@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from pokemonbot.proxy import Proxy
-from pokemonbot.session import _get_domain_overrides, _random_user_agent, create_session
+from pokemonbot.session import _build_connector, _get_domain_overrides, _random_user_agent, create_session
 
 
 class TestRandomUserAgent:
@@ -58,3 +58,22 @@ class TestDomainOverrides:
         headers, cookies = _get_domain_overrides("https://example.com/page")
         assert headers == {}
         assert cookies == {}
+
+
+class TestBuildConnector:
+    @pytest.mark.asyncio
+    async def test_direct_uses_ssl_context(self):
+        """Direct connections should use a real SSL context."""
+        connector = _build_connector(None)
+        # TCPConnector stores ssl context; should not be False
+        assert connector._ssl is not False
+        await connector.close()
+
+    @pytest.mark.asyncio
+    async def test_proxy_disables_ssl_verification(self):
+        """Proxy connections should disable SSL verification to avoid
+        CERTIFICATE_VERIFY_FAILED from intercepting proxies."""
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        connector = _build_connector(proxy)
+        assert connector._ssl is False
+        await connector.close()
