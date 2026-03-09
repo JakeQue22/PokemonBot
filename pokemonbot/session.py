@@ -65,6 +65,19 @@ _DOMAIN_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """Return ``True`` if *exc* indicates a connection/proxy timeout.
+
+    Timeout errors are *expensive* (each waits for the full proxy timeout,
+    e.g. 10 s).  Other proxy errors – SOCKS failures, TLS errors, CONNECT
+    tunnel rejections – typically resolve in < 1 s and are much cheaper.
+    By distinguishing the two the retry loop can try many more proxies
+    without increasing wall-clock time.
+    """
+    msg = str(exc).lower()
+    return "timed out" in msg or "timeout" in msg
+
+
 def _random_user_agent(user_agents: list[str]) -> str:
     return random.choice(user_agents) if user_agents else ""
 
@@ -219,8 +232,10 @@ async def fetch(
 ) -> dict[str, Any]:
     """Fetch a URL with automatic proxy rotation on failure.
 
-    *max_retries* caps the number of proxy attempts per call so the bot
-    does not spend minutes cycling through thousands of dead proxies.
+    *max_retries* caps the number of **timeout** proxy attempts per call.
+    Non-timeout proxy failures (SOCKS, TLS, CONNECT errors) are much
+    faster and are given a separate, larger budget so the bot can skip
+    through many dead proxies without spending minutes on each one.
     Failed proxies are placed on cooldown so they are automatically
     skipped on subsequent requests.
 
@@ -243,16 +258,36 @@ async def fetch(
     domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
-    # Cap attempts at max_retries – even with a large proxy pool we don't
-    # want to try every single proxy in one call.  The cooldown mechanism
-    # ensures persistently-bad proxies are skipped on the next cycle.
-    attempts = max_retries
-
     # Choose the fetcher implementation.
     do_fetch = _fetch_with_curl_cffi if _HAS_CURL_CFFI else _fetch_with_aiohttp
 
+    # --- Retry budget --------------------------------------------------
+    # When a proxy pool is present, proxy failures fall into two buckets:
+    #
+    #  * **Timeout failures** (curl error 28, "Connection timed out") are
+    #    *expensive* – each blocks for the full proxy_timeout (e.g. 10 s).
+    #    These are capped at *max_retries* so the monitor doesn't stall
+    #    for minutes.
+    #
+    #  * **Fast failures** (SOCKS, TLS, CONNECT errors) return in < 1 s
+    #    and are essentially free.  These do NOT count toward max_retries
+    #    so the bot can cheaply skip many bad proxies until it finds a
+    #    working one.  A separate cap prevents infinite loops.
+    #
+    # Without a proxy pool every error counts toward *max_retries* (the
+    # old behaviour).
+    max_fast = min(proxy_pool.size, 100) if proxy_pool else 0
+    timeout_fails = 0
+    fast_fails = 0
+
     last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
+    while True:
+        # --- budget check ---
+        if timeout_fails >= max_retries:
+            break
+        if proxy_pool and fast_fails >= max_fast:
+            break
+
         if proxy_pool:
             proxy = proxy_pool.next_available()
             if proxy is None:
@@ -271,9 +306,7 @@ async def fetch(
 
         try:
             logger.debug(
-                "Attempt %d/%d – GET %s via %s (timeout=%.0fs)",
-                attempt,
-                attempts,
+                "GET %s via %s (timeout=%.0fs)",
                 url,
                 proxy or "direct",
                 effective_timeout,
@@ -289,17 +322,29 @@ async def fetch(
             return result
         except Exception as exc:
             last_error = exc
-            logger.warning(
-                "Attempt %d/%d failed for %s: %s", attempt, attempts, url, exc
-            )
+
             if proxy and proxy_pool:
                 proxy_pool.mark_failed(proxy)
 
-            # Small random jitter between retries to look more human-like
-            # and avoid hammering the target in a tight loop.
-            if attempt < attempts:
-                jitter = random.uniform(0.5, 2.0)
-                await asyncio.sleep(jitter)
+            # Classify the failure and adjust budget / logging.
+            if proxy is not None and not _is_timeout_error(exc):
+                # Fast proxy failure – skip to next proxy immediately.
+                fast_fails += 1
+                logger.warning("Proxy skip (%d) for %s: %s", fast_fails, url, exc)
+            else:
+                # Timeout or non-proxy failure – count toward max_retries.
+                timeout_fails += 1
+                logger.warning(
+                    "Attempt %d/%d failed for %s: %s",
+                    timeout_fails, max_retries, url, exc,
+                )
+                # Small random jitter between retries to look more human-like
+                # and avoid hammering the target in a tight loop.
+                if timeout_fails < max_retries:
+                    jitter = random.uniform(0.5, 2.0)
+                    await asyncio.sleep(jitter)
+
+    total = timeout_fails + fast_fails
 
     # --- Direct-connection fallback ---
     # When a proxy pool is configured but every proxied attempt failed,
@@ -327,5 +372,5 @@ async def fetch(
             logger.warning("Direct fallback also failed for %s: %s", url, exc)
 
     raise ConnectionError(
-        f"All {attempts} attempts failed for {url}"
+        f"All {total} attempts failed for {url}"
     ) from last_error

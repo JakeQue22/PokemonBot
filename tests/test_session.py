@@ -374,3 +374,153 @@ class TestFetchDirectFallback:
             assert result["status"] == 200
             # Last call should be direct (proxy=None)
             assert proxy_args[-1] is None
+
+
+class TestFetchFastSkip:
+    """Tests for the fast-skip optimisation: non-timeout proxy failures
+    do NOT count toward max_retries, letting the bot try many more proxies.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fast_failures_get_extra_attempts(self):
+        """Fast-failing proxies (non-timeout) should be retried beyond max_retries."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        # Pool with many proxies so we don't exhaust the pool itself
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(20)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        call_count = 0
+        success_at = 8  # succeed on the 8th attempt
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if proxy is not None and call_count < success_at:
+                # Simulate fast proxy failure (non-timeout)
+                raise ConnectionError("SOCKS5 connection refused")
+            if proxy is not None:
+                return {
+                    "status": 200,
+                    "body": "OK",
+                    "headers": {},
+                    "url": url,
+                }
+            raise ConnectionError("should not reach direct")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=2,  # only 2 timeout retries, but fast-fails get more
+            )
+            assert result["status"] == 200
+            # Should have succeeded after more than max_retries attempts
+            assert call_count == success_at
+
+    @pytest.mark.asyncio
+    async def test_timeout_failures_respect_max_retries(self):
+        """Timeout failures should be capped by max_retries."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(20)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        timeout_calls = 0
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal timeout_calls
+            if proxy is not None:
+                timeout_calls += 1
+                raise ConnectionError("Connection timed out after 10000 milliseconds")
+            raise ConnectionError("direct also dead")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            with pytest.raises(ConnectionError):
+                await fetch(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    max_retries=3,
+                    direct_fallback=False,
+                )
+            # Should stop after exactly max_retries timeout failures
+            assert timeout_calls == 3
+
+    @pytest.mark.asyncio
+    async def test_mixed_fast_and_timeout_failures(self):
+        """Mix of fast and timeout failures: only timeouts count toward limit."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(30)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        call_count = 0
+        timeout_count = 0
+        fast_count = 0
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count, timeout_count, fast_count
+            call_count += 1
+            if proxy is not None:
+                # Alternate between fast and timeout failures
+                if call_count % 3 == 0:
+                    timeout_count += 1
+                    raise ConnectionError("Connection timed out after 10000 ms")
+                else:
+                    fast_count += 1
+                    raise ConnectionError("SOCKS5 auth failed")
+            raise ConnectionError("direct dead")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ):
+            with pytest.raises(ConnectionError):
+                await fetch(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    max_retries=2,
+                    direct_fallback=False,
+                )
+            # Timeout failures should be capped at 2, fast failures > 2
+            assert timeout_count == 2
+            assert fast_count > timeout_count
+
+    @pytest.mark.asyncio
+    async def test_is_timeout_error_detection(self):
+        """The _is_timeout_error helper correctly classifies exceptions."""
+        from pokemonbot.session import _is_timeout_error
+
+        assert _is_timeout_error(
+            Exception("Connection timed out after 10000 milliseconds")
+        )
+        assert _is_timeout_error(
+            Exception("Failed to perform, curl: (28) Timeout was reached")
+        )
+        assert not _is_timeout_error(
+            Exception("SOCKS5 connection refused")
+        )
+        assert not _is_timeout_error(
+            Exception("CONNECT tunnel failed, response 504")
+        )
+        assert not _is_timeout_error(
+            Exception("TLS connect error: WRONG_VERSION_NUMBER")
+        )
