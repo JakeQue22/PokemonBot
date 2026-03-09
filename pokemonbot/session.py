@@ -215,6 +215,7 @@ async def fetch(
     proxy_timeout: float | None = None,
     extra_headers: dict[str, str] | None = None,
     max_retries: int = 3,
+    direct_fallback: bool = True,
 ) -> dict[str, Any]:
     """Fetch a URL with automatic proxy rotation on failure.
 
@@ -226,6 +227,11 @@ async def fetch(
     *proxy_timeout*, when set, overrides *timeout* for requests routed
     through a proxy.  Public proxies are unreliable and a shorter timeout
     (e.g. 10 s) prevents one dead proxy from blocking the whole cycle.
+
+    When *direct_fallback* is ``False`` the final direct (no-proxy)
+    request that normally fires after all proxy attempts fail is skipped.
+    This is useful when the user has a large proxy pool and never wants
+    their real IP exposed.
 
     When ``curl_cffi`` is installed the request impersonates a real Chrome
     browser (TLS fingerprint, HTTP/2 settings, etc.) which dramatically
@@ -299,7 +305,9 @@ async def fetch(
     # When a proxy pool is configured but every proxied attempt failed,
     # try ONE final request without a proxy.  This keeps the monitors
     # alive even when all public proxies are dead.
-    if proxy_pool is not None:
+    # Disabled when direct_fallback=False (user has a large pool and
+    # never wants their real IP exposed).
+    if proxy_pool is not None and direct_fallback:
         try:
             logger.info(
                 "All proxy attempts exhausted – trying direct connection for %s",

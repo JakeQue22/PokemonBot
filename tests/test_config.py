@@ -207,3 +207,28 @@ class TestSaveConfig:
         save_config(cfg, f)
         content = f.read_text()
         assert "enabled" not in content
+
+    def test_direct_fallback_default_true(self, tmp_path):
+        """ProxyConfig.direct_fallback defaults to True."""
+        f = tmp_path / "config.yaml"
+        f.write_text("monitors: []\n")
+        cfg = load_config(f)
+        assert cfg.proxies.direct_fallback is True
+
+    def test_direct_fallback_false_roundtrip(self, tmp_path):
+        """A disabled direct_fallback survives a save → load cycle."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        cfg.proxies.direct_fallback = False
+        save_config(cfg, f)
+        reloaded = load_config(f)
+        assert reloaded.proxies.direct_fallback is False
+
+    def test_direct_fallback_true_not_written(self, tmp_path):
+        """direct_fallback=True should not appear in the YAML (it's the default)."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        cfg.proxies.direct_fallback = True
+        save_config(cfg, f)
+        content = f.read_text()
+        assert "direct_fallback" not in content

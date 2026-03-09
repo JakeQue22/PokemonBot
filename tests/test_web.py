@@ -734,3 +734,58 @@ class TestDashboard:
                 assert "successes" in t
         # Clean up
         await client.post("/api/stop")
+
+    # ---- direct_fallback setting tests ----
+
+    @pytest.mark.asyncio
+    async def test_general_settings_direct_fallback_in_get(self, web_app, aiohttp_client):
+        """The /api/general-settings GET should include direct_fallback."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/general-settings")
+        data = await resp.json()
+        assert "direct_fallback" in data
+        assert data["direct_fallback"] is True  # default
+
+    @pytest.mark.asyncio
+    async def test_general_settings_direct_fallback_roundtrip(self, web_app, aiohttp_client):
+        """Setting direct_fallback=False should be retrievable."""
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/general-settings",
+            json={"direct_fallback": False},
+        )
+        assert resp.status == 200
+        resp = await client.get("/api/general-settings")
+        data = await resp.json()
+        assert data["direct_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_index_contains_direct_fallback_checkbox(self, web_app, aiohttp_client):
+        """Dashboard HTML should contain the direct_fallback checkbox."""
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert 'id="gen-direct-fallback"' in text
+
+    @pytest.mark.asyncio
+    async def test_fetch_public_proxies_returns_kept_and_removed(
+        self, web_app, aiohttp_client
+    ):
+        """Fetch-public endpoint should return kept/removed/new/total counts."""
+        client = await aiohttp_client(web_app)
+        fake_proxies = [
+            Proxy(protocol="http", host="9.8.7.6", port=3128),
+        ]
+        with patch(
+            "pokemonbot.web.fetch_public_proxies",
+            new_callable=AsyncMock,
+            return_value=fake_proxies,
+        ):
+            resp = await client.post("/api/proxies/fetch-public")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "kept" in data
+            assert "removed" in data
+            assert "new" in data
+            assert "total" in data
+            assert data["status"] == "ok"

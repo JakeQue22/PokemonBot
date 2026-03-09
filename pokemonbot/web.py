@@ -535,6 +535,7 @@ async def _api_general_settings_get(request: web.Request) -> web.Response:
         "request_timeout": state.config.request_timeout,
         "max_retries": state.config.max_retries,
         "base_url": state.config.base_url,
+        "direct_fallback": state.config.proxies.direct_fallback,
     })
 
 
@@ -556,6 +557,8 @@ async def _api_general_settings_post(request: web.Request) -> web.Response:
     if "base_url" in body:
         val = str(body["base_url"]).strip().rstrip("/")
         state.config.base_url = val
+    if "direct_fallback" in body:
+        state.config.proxies.direct_fallback = bool(body["direct_fallback"])
     _save_state(state)
     return web.json_response({"status": "updated"})
 
@@ -563,26 +566,58 @@ async def _api_general_settings_post(request: web.Request) -> web.Response:
 # -- Fetch public proxies endpoint ----------------------------------------
 
 async def _api_proxies_fetch_public(request: web.Request) -> web.Response:
-    """Fetch free proxies from public sources and save them to the proxy file."""
+    """Fetch free proxies from public sources and save them to the proxy file.
+
+    Behaviour:
+    1. If a proxy pool is active, drop every proxy that has *failures > 0*
+       and keep the rest (the "successful" ones).
+    2. Fetch fresh proxies from public GitHub-hosted sources.
+    3. Merge: existing successful proxies + new ones (de-duplicated by URL).
+    4. Save to disk.
+
+    This ensures the user never accumulates dead proxies while still
+    retaining proxies that have been working well.
+    """
     state: _AppState = request.app["state"]
+
+    # -- Step 1: determine which existing proxies to keep (no failures) --
+    kept: list[Proxy] = []
+    removed_count = 0
+    if state.manager and state.manager.proxy_pool:
+        pool = state.manager.proxy_pool
+        for s in pool.stats():
+            if s["failures"] == 0:
+                kept.append(parse_proxy(s["url"]))
+            else:
+                removed_count += 1
+    else:
+        # Bot not running – keep everything currently on disk
+        try:
+            proxy_path = ensure_proxy_file(state.config.proxies.file)
+            kept = load_proxies(proxy_path) if proxy_path.is_file() else []
+        except OSError:
+            kept = []
+
+    # -- Step 2: fetch fresh proxies from public sources --
     try:
-        proxies = await fetch_public_proxies()
+        fresh = await fetch_public_proxies()
     except Exception as exc:
         logger.exception("Failed to fetch public proxies")
         return web.json_response({"error": str(exc)}, status=500)
 
-    if not proxies:
+    if not fresh and not kept:
         return web.json_response(
             {"error": "No proxies could be fetched from public sources"}, status=400
         )
 
+    # -- Step 3: merge, de-duplicate by URL --
+    kept_urls = {p.url for p in kept}
+    new_proxies = [p for p in fresh if p.url not in kept_urls]
+    merged = kept + new_proxies
+
+    # -- Step 4: save to disk --
     try:
         proxy_path = ensure_proxy_file(state.config.proxies.file)
-        # Merge with any existing proxies, de-duplicate by URL
-        existing = load_proxies(proxy_path) if proxy_path.is_file() else []
-        existing_urls = {p.url for p in existing}
-        new_proxies = [p for p in proxies if p.url not in existing_urls]
-        merged = existing + new_proxies
         save_proxies(merged, proxy_path)
     except OSError as exc:
         logger.exception("Failed to save fetched proxies")
@@ -590,10 +625,15 @@ async def _api_proxies_fetch_public(request: web.Request) -> web.Response:
             {"error": "Proxies fetched but could not be saved to disk"}, status=500
         )
 
-    logger.info("Public proxies fetched: %d new, %d total", len(new_proxies), len(merged))
+    logger.info(
+        "Public proxies refreshed: %d kept, %d removed (failed), %d new, %d total",
+        len(kept), removed_count, len(new_proxies), len(merged),
+    )
     return web.json_response({
         "status": "ok",
-        "fetched": len(proxies),
+        "kept": len(kept),
+        "removed": removed_count,
+        "fetched": len(fresh),
         "new": len(new_proxies),
         "total": len(merged),
     })
@@ -871,6 +911,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <label>Concurrency</label>    <input id="gen-concurrency" type="number" value="10" min="1">
             <label>Request Timeout (s)</label> <input id="gen-timeout" type="number" value="30" min="1" step="1">
             <label>Max Retries per Request</label> <input id="gen-max-retries" type="number" value="10" min="1" step="1">
+            <label>Direct Fallback</label> <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer"><input id="gen-direct-fallback" type="checkbox" checked> Try direct (no-proxy) connection when all proxies fail</label>
             <label>Base URL (external SSL)</label> <input id="gen-base-url" placeholder="https://mybot.example.com">
           </div>
           <p style="color:var(--text-muted);font-size:.85rem;margin:.4rem 0 0">
@@ -897,7 +938,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           </div>
 
           <div class="controls" style="margin-bottom:.8rem">
-            <button class="btn btn-accent" id="btn-fetch-proxies" onclick="fetchPublicProxies()">🌍 Fetch Public Proxies</button>
+            <button class="btn btn-accent" id="btn-fetch-proxies" onclick="fetchPublicProxies()">🔄 Refresh Proxies</button>
             <button class="btn btn-outline" onclick="refreshProxies()">🔄 Refresh</button>
           </div>
 
@@ -1256,6 +1297,7 @@ async function loadGeneral(){
     document.getElementById('gen-concurrency').value=d.concurrency||10;
     document.getElementById('gen-timeout').value=d.request_timeout||30;
     document.getElementById('gen-max-retries').value=d.max_retries||10;
+    document.getElementById('gen-direct-fallback').checked=d.direct_fallback!==false;
     document.getElementById('gen-base-url').value=d.base_url||'';
   }catch(e){}
 }
@@ -1265,6 +1307,7 @@ async function saveGeneral(){
     concurrency:parseInt(document.getElementById('gen-concurrency').value)||10,
     request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30,
     max_retries:parseInt(document.getElementById('gen-max-retries').value)||10,
+    direct_fallback:document.getElementById('gen-direct-fallback').checked,
     base_url:document.getElementById('gen-base-url').value.trim()
   };
   const r=await fetch(API+'/api/general-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -1334,10 +1377,10 @@ async function fetchPublicProxies(){
     try{d=JSON.parse(text);}catch(pe){
       toast('Server error (HTTP '+r.status+'): '+(text.length>200?text.substring(0,200)+'…':text),false);return;
     }
-    if(r.ok){toast('✅ Fetched '+d.new+' new proxies ('+d.total+' total)',true);refreshProxies();}
+    if(r.ok){toast('✅ Kept '+d.kept+', removed '+d.removed+' failed, added '+d.new+' new ('+d.total+' total)',true);refreshProxies();}
     else toast(d.error||'Failed to fetch public proxies',false);
   }catch(e){toast('Network error fetching proxies: '+e.message,false);}
-  finally{btn.disabled=false;btn.textContent='🌍 Fetch Public Proxies';}
+  finally{btn.disabled=false;btn.textContent='🔄 Refresh Proxies';}
 }
 
 /* ---- Config viewer ---- */

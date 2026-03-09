@@ -24,6 +24,7 @@ class ProxyConfig:
     rotate_every_n_requests: int = 0
     test_url: str = "https://httpbin.org/ip"
     timeout: float = 10.0
+    direct_fallback: bool = True
 
 
 @dataclass

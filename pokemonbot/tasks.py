@@ -98,6 +98,7 @@ class TaskManager:
                 proxy_timeout=self.app_config.proxies.timeout,
                 extra_headers=state.config.headers or None,
                 max_retries=self.app_config.max_retries,
+                direct_fallback=self.app_config.proxies.direct_fallback,
             )
         except ConnectionError as exc:
             state.errors += 1
