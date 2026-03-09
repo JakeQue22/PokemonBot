@@ -35,6 +35,11 @@ _IMPERSONATE_BROWSERS: list[str] = [
     "chrome124",
 ]
 
+# Maximum number of fast-fail (non-timeout) proxy skips per fetch() call.
+# Fast failures (SOCKS, TLS, CONNECT errors) return in < 1 s so trying
+# many in a row adds negligible wall-clock time compared to timeouts.
+_MAX_FAST_PROXY_SKIPS: int = 100
+
 
 def _default_ssl_context() -> ssl.SSLContext:
     """Return an SSL context that behaves like a real browser.
@@ -74,6 +79,11 @@ def _is_timeout_error(exc: Exception) -> bool:
     By distinguishing the two the retry loop can try many more proxies
     without increasing wall-clock time.
     """
+    # Check concrete exception types first.
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    # curl_cffi wraps libcurl errors in generic exceptions; fall back to
+    # string matching for the curl error-28 ("Connection timed out") case.
     msg = str(exc).lower()
     return "timed out" in msg or "timeout" in msg
 
@@ -276,7 +286,7 @@ async def fetch(
     #
     # Without a proxy pool every error counts toward *max_retries* (the
     # old behaviour).
-    max_fast = min(proxy_pool.size, 100) if proxy_pool else 0
+    max_fast = min(proxy_pool.size, _MAX_FAST_PROXY_SKIPS) if proxy_pool else 0
     timeout_fails = 0
     fast_fails = 0
 

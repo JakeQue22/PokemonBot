@@ -515,6 +515,8 @@ class TestFetchFastSkip:
         assert _is_timeout_error(
             Exception("Failed to perform, curl: (28) Timeout was reached")
         )
+        assert _is_timeout_error(asyncio.TimeoutError())
+        assert _is_timeout_error(TimeoutError("connection timeout"))
         assert not _is_timeout_error(
             Exception("SOCKS5 connection refused")
         )
