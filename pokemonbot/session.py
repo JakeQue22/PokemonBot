@@ -387,7 +387,7 @@ async def fetch(
             # the same URL may succeed from a different IP / fingerprint.
             resp_status = result.get("status", 0)
             if (
-                retry_on_status
+                retry_on_status is not None
                 and resp_status in retry_on_status
                 and proxy is not None
             ):
