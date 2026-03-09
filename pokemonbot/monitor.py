@@ -295,7 +295,7 @@ class SmythsToysMonitor(BaseMonitor):
             if not self._keyword_match(store_name, keywords):
                 continue
             stock_lower = stock_level.strip().lower()
-            if stock_lower in ("green", "instock", "available", "true") or stock_lower.isdigit() and int(stock_lower) > 0:
+            if stock_lower in ("green", "instock", "available", "true") or (stock_lower.isdigit() and int(stock_lower) > 0):
                 return Alert(
                     product_name=f"{self._extract_title(body) or url} @ {store_name}",
                     url=url,

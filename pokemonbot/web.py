@@ -305,6 +305,7 @@ async def _api_config(request: web.Request) -> web.Response:
             "site": m.site,
             "keywords": m.keywords,
             "interval": m.interval,
+            "enabled": m.enabled,
         })
     data = {
         "concurrency": cfg.concurrency,
@@ -1051,7 +1052,7 @@ function updateMonitorsPage(d){
     body.innerHTML=d.tasks.map((t,i)=>{
       let badge='badge-muted';if(t.last_status==='in_stock')badge='badge-green';else if(t.last_status==='queue_active')badge='badge-yellow';
       return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(t.url)}</a></td>`+
-      `<td>–</td><td>–</td><td>–</td><td><span class="badge badge-green">Yes</span></td><td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
+      `<td>–</td><td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
       `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     return;
