@@ -81,6 +81,7 @@ class TestFormatError:
         assert _format_error(exc) == "TimeoutError"
 
     def test_empty_string_message_uses_class_name(self):
+        """When str(exc) is an empty string, the class name is returned."""
         exc = Exception("")
         assert _format_error(exc) == "Exception"
 
