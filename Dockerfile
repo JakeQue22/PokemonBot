@@ -7,6 +7,9 @@ COPY pyproject.toml README.md ./
 COPY pokemonbot/ pokemonbot/
 RUN pip install --no-cache-dir .
 
+# Install Playwright Chromium and its system dependencies (libnss3, etc.)
+RUN playwright install --with-deps chromium
+
 # Seed empty config/proxy files so bind-mounts have file targets
 # (Docker creates directories when the host path is missing).
 RUN touch /app/proxies.txt

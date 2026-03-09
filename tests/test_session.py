@@ -859,3 +859,51 @@ class TestRetryOnStatus:
             )
             assert result["status"] == 403
             assert call_count == 1
+
+
+class TestPlaywrightSupport:
+    """Tests for the Playwright browser-based fetch."""
+
+    def test_playwright_importable(self):
+        """Playwright should be importable when installed."""
+        from pokemonbot.session import _HAS_PLAYWRIGHT
+
+        assert _HAS_PLAYWRIGHT is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_falls_back_when_no_playwright(self):
+        """When _HAS_PLAYWRIGHT is False, fetch_with_browser falls back to fetch()."""
+        from pokemonbot.session import fetch_with_browser
+
+        fake_response = {
+            "status": 200,
+            "body": "OK",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            False,
+        ), patch(
+            "pokemonbot.session.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            result = await fetch_with_browser("https://example.com")
+            assert result["status"] == 200
+            mock_fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_browser_no_error_when_not_started(self):
+        """close_browser() should not raise even if no browser is running."""
+        from pokemonbot.session import close_browser
+
+        # Should be a no-op when browser hasn't been started.
+        await close_browser()
+
+    def test_browser_sites_includes_pokemoncenter(self):
+        """pokemoncenter should be in the _BROWSER_SITES set."""
+        from pokemonbot.tasks import _BROWSER_SITES
+
+        assert "pokemoncenter" in _BROWSER_SITES

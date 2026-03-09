@@ -246,8 +246,45 @@ class TestTaskManager:
         assert manager.task_states == []
 
     @pytest.mark.asyncio
-    async def test_pokemoncenter_passes_retry_on_status(self):
-        """pokemoncenter monitors should pass retry_on_status={403} to fetch()."""
+    async def test_pokemoncenter_uses_browser_fetch(self):
+        """pokemoncenter monitors should use fetch_with_browser() when Playwright is available."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch_with_browser",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_browser_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            True,
+        ):
+            await manager._check_once(state, monitor)
+
+        mock_browser_fetch.assert_called_once()
+        _, kwargs = mock_browser_fetch.call_args
+        assert "url" not in kwargs or kwargs.get("url") == monitor_cfg.url
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_falls_back_without_playwright(self):
+        """Without Playwright, pokemoncenter monitors fall back to curl/aiohttp fetch()."""
         monitor_cfg = MonitorConfig(
             name="PC ETB",
             url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
@@ -272,9 +309,13 @@ class TestTaskManager:
             "pokemonbot.tasks.fetch",
             new_callable=AsyncMock,
             return_value=fake_response,
-        ) as mock_fetch:
+        ) as mock_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            False,
+        ):
             await manager._check_once(state, monitor)
 
+        mock_fetch.assert_called_once()
         _, kwargs = mock_fetch.call_args
         assert kwargs["retry_on_status"] == frozenset({403})
 

@@ -28,6 +28,16 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_CURL_CFFI = False
 
+# ---------------------------------------------------------------------------
+# Playwright – browser-based fetch for sites requiring JS execution
+# ---------------------------------------------------------------------------
+try:
+    from playwright.async_api import async_playwright
+
+    _HAS_PLAYWRIGHT = True
+except ImportError:  # pragma: no cover
+    _HAS_PLAYWRIGHT = False
+
 # Browser versions to impersonate.  curl_cffi supports strings like
 # ``"chrome131"`` which reproduce the *exact* TLS/JA3/HTTP2 fingerprint
 # of that browser, defeating Cloudflare & Akamai bot detection.
@@ -464,3 +474,148 @@ async def fetch(
     raise ConnectionError(
         f"All {total} attempts failed for {url}"
     ) from last_error
+
+
+# ---------------------------------------------------------------------------
+# Playwright browser-based fetch – for sites requiring JS execution
+# ---------------------------------------------------------------------------
+# Akamai Bot Manager (used by pokemoncenter.com) requires a real browser
+# that executes JavaScript to set challenge cookies (_abck, bm_sz).
+# Without these cookies every request returns 403.  A headless Chromium
+# instance handles the challenge automatically.
+#
+# The browser is started lazily on first use and reused across calls.
+# Each fetch opens a new page, navigates, waits for any JS challenge to
+# resolve, extracts the fully-rendered HTML, then closes the page.
+
+_pw_instance: Any = None
+_pw_browser: Any = None
+
+
+async def _ensure_browser() -> Any:
+    """Lazily start a shared Playwright Chromium browser.
+
+    Returns the browser instance.  Restarts it if a previous instance
+    was closed or crashed.
+    """
+    global _pw_instance, _pw_browser
+
+    if _pw_browser is not None and _pw_browser.is_connected():
+        return _pw_browser
+
+    # Clean up any stale state.
+    if _pw_instance is not None:
+        try:
+            await _pw_instance.stop()
+        except Exception:
+            pass
+
+    _pw_instance = await async_playwright().start()
+    _pw_browser = await _pw_instance.chromium.launch(
+        headless=True,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ],
+    )
+    logger.info("Playwright Chromium browser started for JS-protected sites")
+    return _pw_browser
+
+
+async def close_browser() -> None:
+    """Shut down the shared Playwright browser (call on app shutdown)."""
+    global _pw_instance, _pw_browser
+    if _pw_browser is not None:
+        try:
+            await _pw_browser.close()
+        except Exception:
+            pass
+        _pw_browser = None
+    if _pw_instance is not None:
+        try:
+            await _pw_instance.stop()
+        except Exception:
+            pass
+        _pw_instance = None
+
+
+async def fetch_with_browser(
+    url: str,
+    *,
+    timeout: float = 30.0,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Fetch *url* using a real Chromium browser via Playwright.
+
+    This executes JavaScript automatically, handling Akamai Bot Manager
+    challenges that block pure HTTP clients (curl_cffi, aiohttp).
+
+    Returns a dict with ``status``, ``body``, ``headers``, and ``url``
+    matching the format used by :func:`fetch`.
+
+    Falls back to :func:`fetch` (curl_cffi/aiohttp) if Playwright is
+    not installed.
+    """
+    if not _HAS_PLAYWRIGHT:
+        logger.warning(
+            "Playwright not installed – falling back to HTTP fetch for %s",
+            url,
+        )
+        return await fetch(url, timeout=timeout, extra_headers=extra_headers)
+
+    browser = await _ensure_browser()
+
+    domain_headers, domain_cookies = _get_domain_overrides(url)
+    merged_headers = {**domain_headers, **(extra_headers or {})}
+
+    context = await browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1920, "height": 1080},
+        locale="en-GB",
+        extra_http_headers=merged_headers or None,
+    )
+
+    # Inject domain cookies before navigation.
+    if domain_cookies:
+        host = urlparse(url).hostname or ""
+        cookie_list = [
+            {"name": k, "value": v, "domain": host, "path": "/"}
+            for k, v in domain_cookies.items()
+        ]
+        await context.add_cookies(cookie_list)
+
+    page = await context.new_page()
+    try:
+        timeout_ms = int(timeout * 1000)
+        response = await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=timeout_ms,
+        )
+        # Allow time for any Akamai / DataDome JS challenges to resolve.
+        # The challenge page typically executes JS within a few seconds
+        # which sets cookies and redirects to the real page.
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+
+        body = await page.content()
+        status = response.status if response else 0
+        resp_headers = await response.all_headers() if response else {}
+        final_url = page.url
+
+        return {
+            "status": status,
+            "body": body,
+            "headers": dict(resp_headers),
+            "url": final_url,
+        }
+    except Exception as exc:
+        raise ConnectionError(
+            f"Browser fetch failed for {url}: {_format_error(exc)}"
+        ) from exc
+    finally:
+        await page.close()
+        await context.close()

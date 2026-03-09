@@ -10,7 +10,12 @@ from pokemonbot.config import AppConfig, MonitorConfig
 from pokemonbot.monitor import get_monitor
 from pokemonbot.notifier import Alert, NotifierPipeline
 from pokemonbot.proxy import ProxyPool
-from pokemonbot.session import fetch
+from pokemonbot.session import (
+    _HAS_PLAYWRIGHT,
+    close_browser,
+    fetch,
+    fetch_with_browser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +25,11 @@ logger = logging.getLogger(__name__)
 _SITE_RETRY_STATUSES: dict[str, frozenset[int]] = {
     "pokemoncenter": frozenset({403}),
 }
+
+# Sites where a real browser is required because the anti-bot layer
+# (e.g. Akamai Bot Manager) demands JavaScript execution to set
+# challenge cookies.  curl/aiohttp cannot handle these.
+_BROWSER_SITES: frozenset[str] = frozenset({"pokemoncenter"})
 
 
 @dataclass
@@ -72,6 +82,8 @@ class TaskManager:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Clean up the shared browser if it was started.
+        await close_browser()
         logger.info("All monitor tasks stopped.")
 
     async def _run_task(self, state: TaskState, sem: asyncio.Semaphore) -> None:
@@ -96,19 +108,29 @@ class TaskManager:
 
     async def _check_once(self, state: TaskState, monitor: object) -> None:
         state.checks += 1
+        use_browser = (
+            state.config.site in _BROWSER_SITES and _HAS_PLAYWRIGHT
+        )
         retry_on_status = _SITE_RETRY_STATUSES.get(state.config.site)
         try:
-            response = await fetch(
-                state.config.url,
-                proxy_pool=self.proxy_pool,
-                user_agents=self.app_config.user_agents,
-                timeout=self.app_config.request_timeout,
-                proxy_timeout=self.app_config.proxies.timeout,
-                extra_headers=state.config.headers or None,
-                max_retries=self.app_config.max_retries,
-                direct_fallback=self.app_config.proxies.direct_fallback,
-                retry_on_status=retry_on_status,
-            )
+            if use_browser:
+                response = await fetch_with_browser(
+                    state.config.url,
+                    timeout=self.app_config.request_timeout,
+                    extra_headers=state.config.headers or None,
+                )
+            else:
+                response = await fetch(
+                    state.config.url,
+                    proxy_pool=self.proxy_pool,
+                    user_agents=self.app_config.user_agents,
+                    timeout=self.app_config.request_timeout,
+                    proxy_timeout=self.app_config.proxies.timeout,
+                    extra_headers=state.config.headers or None,
+                    max_retries=self.app_config.max_retries,
+                    direct_fallback=self.app_config.proxies.direct_fallback,
+                    retry_on_status=retry_on_status,
+                )
         except ConnectionError as exc:
             state.errors += 1
             logger.error("Monitor [%s] connection error: %s", state.config.name, exc)
