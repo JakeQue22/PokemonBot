@@ -325,6 +325,7 @@ def _monitor_to_dict(m: MonitorConfig) -> dict[str, Any]:
         "site": m.site,
         "keywords": m.keywords,
         "interval": m.interval,
+        "enabled": m.enabled,
     }
 
 
@@ -353,9 +354,13 @@ async def _api_monitors_add(request: web.Request) -> web.Response:
     else:
         keywords = list(keywords_raw)
     interval = float(body.get("interval", 10.0))
+    enabled = body.get("enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.lower() not in ("false", "0", "no")
 
     monitor = MonitorConfig(
         name=name, url=url, site=site, keywords=keywords, interval=interval,
+        enabled=bool(enabled),
     )
     state.config.monitors.append(monitor)
     _save_state(state)
@@ -416,6 +421,12 @@ async def _api_monitors_update(request: web.Request) -> web.Response:
             m.keywords = list(kw)
     if "interval" in body:
         m.interval = max(1.0, float(body["interval"]))
+    if "enabled" in body:
+        val = body["enabled"]
+        if isinstance(val, str):
+            m.enabled = val.lower() not in ("false", "0", "no")
+        else:
+            m.enabled = bool(val)
 
     _save_state(state)
     logger.info("Monitor updated [%d]: %s → %s", idx, m.name, m.url)
@@ -770,6 +781,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
           <label>Site</label>
           <select id="mon-site">
             <option value="pokemoncenter">pokemoncenter</option>
+            <option value="smythstoys">smythstoys</option>
             <option value="generic">generic</option>
           </select>
           <label>Keywords</label>    <input id="mon-keywords" placeholder="comma-separated (optional)">
@@ -784,7 +796,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <div class="card">
         <h2>Configured Monitors</h2>
         <table class="tbl" id="monitors-table">
-          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:80px"></th></tr></thead>
+          <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Enabled</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:120px"></th></tr></thead>
           <tbody id="monitors-body"></tbody>
         </table>
         <div id="monitors-empty" style="text-align:center;padding:2rem;color:var(--muted);font-size:.85rem">No monitors configured.</div>
@@ -801,6 +813,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <label>Site</label>
             <select id="edit-site">
               <option value="pokemoncenter">pokemoncenter</option>
+              <option value="smythstoys">smythstoys</option>
               <option value="generic">generic</option>
             </select>
             <label>Keywords</label>    <input id="edit-keywords">
@@ -1038,7 +1051,7 @@ function updateMonitorsPage(d){
     body.innerHTML=d.tasks.map((t,i)=>{
       let badge='badge-muted';if(t.last_status==='in_stock')badge='badge-green';else if(t.last_status==='queue_active')badge='badge-yellow';
       return `<tr><td>${esc(t.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(t.url)}</a></td>`+
-      `<td>–</td><td>–</td><td>–</td><td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
+      `<td>–</td><td>–</td><td>–</td><td><span class="badge badge-green">Yes</span></td><td>${t.checks}</td><td>${t.successes||0}</td><td>${t.alerts}</td><td>${t.errors}</td><td><span class="badge ${badge}">${esc(t.last_status||'–')}</span></td>`+
       `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
     }).join('');
     return;
@@ -1049,10 +1062,17 @@ function updateMonitorsPage(d){
     const rt=taskMap[m.name]||{};
     let badge='badge-muted';const st=rt.last_status||'';
     if(st==='in_stock')badge='badge-green';else if(st==='queue_active')badge='badge-yellow';
-    return `<tr><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(m.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(m.url)}</a></td>`+
+    const en=m.enabled!==false;
+    const enBadge=en?'badge-green':'badge-red';
+    const enLabel=en?'Yes':'No';
+    const toggleIcon=en?'⏸️':'▶️';
+    const toggleTitle=en?'Disable':'Enable';
+    const rowStyle=en?'':'opacity:.55';
+    return `<tr style="${rowStyle}"><td>${esc(m.name)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(m.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">${esc(m.url)}</a></td>`+
     `<td>${esc(m.site)}</td><td>${esc((m.keywords||[]).join(', ')||'–')}</td><td>${m.interval}s</td>`+
+    `<td><span class="badge ${enBadge}">${enLabel}</span></td>`+
     `<td>${rt.checks??'–'}</td><td>${rt.successes??'–'}</td><td>${rt.alerts??'–'}</td><td>${rt.errors??'–'}</td><td><span class="badge ${badge}">${esc(st||'–')}</span></td>`+
-    `<td><button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
+    `<td><button class="btn btn-outline btn-sm" onclick="toggleMonitor(${i})" title="${toggleTitle}">${toggleIcon}</button> <button class="btn btn-outline btn-sm" onclick="editMonitor(${i})" title="Edit">✏️</button> <button class="btn btn-outline btn-sm" onclick="removeMonitor(${i})" title="Remove">🗑️</button></td></tr>`;
   }).join('');
 }
 
@@ -1084,6 +1104,15 @@ async function removeMonitor(idx){
   const d=await r.json();
   if(r.ok){toast('Monitor removed. Stop and start the bot to apply.',true);loadConfig();fetchStatus();}
   else toast(d.error||'Failed to remove',false);
+}
+async function toggleMonitor(idx){
+  const m=(window._cfgMonitors||[])[idx];
+  if(!m)return;
+  const newEnabled=m.enabled===false?true:false;
+  const r=await fetch(API+'/api/monitors/'+idx,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:newEnabled})});
+  const d=await r.json();
+  if(r.ok){toast('Monitor '+(newEnabled?'enabled':'disabled')+'. Stop and start the bot to apply.',true);loadConfig();fetchStatus();}
+  else toast(d.error||'Failed to toggle',false);
 }
 function editMonitor(idx){
   const m=(window._cfgMonitors||[])[idx];

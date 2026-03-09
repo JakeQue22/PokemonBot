@@ -47,7 +47,12 @@ class TaskManager:
             logger.warning("No monitors configured – nothing to do.")
             return
 
-        self._tasks = [TaskState(config=m) for m in self.app_config.monitors]
+        enabled = [m for m in self.app_config.monitors if m.enabled]
+        if not enabled:
+            logger.warning("All monitors are disabled – nothing to do.")
+            return
+
+        self._tasks = [TaskState(config=m) for m in enabled]
 
         sem = asyncio.Semaphore(self.app_config.concurrency)
         tasks = [

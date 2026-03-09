@@ -1,6 +1,6 @@
 """Tests for the monitor module."""
 
-from pokemonbot.monitor import GenericMonitor, PokemonCenterMonitor, get_monitor
+from pokemonbot.monitor import GenericMonitor, PokemonCenterMonitor, SmythsToysMonitor, get_monitor
 
 
 class TestPokemonCenterMonitor:
@@ -140,10 +140,186 @@ class TestGenericMonitor:
         assert alert is None
 
 
+class TestSmythsToysMonitor:
+    def _make_response(self, body: str, status: int = 200) -> dict:
+        return {"body": body, "status": status, "headers": {}, "url": ""}
+
+    def test_detect_add_to_basket(self):
+        m = SmythsToysMonitor()
+        body = '<button class="add-to-basket">Add to Basket</button>'
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_detect_in_stock_schema(self):
+        m = SmythsToysMonitor()
+        body = '{"availability": "https://schema.org/InStock", "price": "44.99"}'
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is not None
+        assert alert.status == "in_stock"
+        assert alert.price == "£44.99"
+
+    def test_detect_out_of_stock(self):
+        m = SmythsToysMonitor()
+        body = '<span class="availability">Out of Stock</span>'
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is None
+
+    def test_403_returns_none(self):
+        m = SmythsToysMonitor()
+        alert = m.parse(
+            self._make_response("blocked", status=403),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is None
+
+    def test_500_returns_none(self):
+        m = SmythsToysMonitor()
+        alert = m.parse(
+            self._make_response("error", status=500),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is None
+
+    def test_category_page_matches_keyword(self):
+        m = SmythsToysMonitor()
+        body = (
+            '<div class="product-card">'
+            '<a href="/uk/en-gb/brand/pokemon/p/237414">Elite Trainer Box</a>'
+            '<button class="addToBasket">Add to Basket</button>'
+            '</div>'
+            '<div class="product-card">'
+            '<a href="/uk/en-gb/brand/pokemon/p/237415">Booster Pack</a>'
+            '<button class="addToBasket">Add to Basket</button>'
+            '</div>'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/c/SM0601011202",
+            keywords=["Trainer Box"],
+        )
+        assert alert is not None
+        assert alert.status == "in_stock"
+        assert "Trainer Box" in alert.product_name
+
+    def test_category_page_no_keyword_match(self):
+        m = SmythsToysMonitor()
+        body = (
+            '<div class="product-card">'
+            '<a href="/uk/en-gb/brand/pokemon/p/237415">Booster Pack</a>'
+            '<button class="addToBasket">Add to Basket</button>'
+            '</div>'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/c/SM0601011202",
+            keywords=["Trainer Box"],
+        )
+        assert alert is None
+
+    def test_category_page_no_stock(self):
+        m = SmythsToysMonitor()
+        body = (
+            '<div class="product-card">'
+            '<span>Elite Trainer Box</span>'
+            '<span class="out-of-stock">Out of Stock</span>'
+            '</div>'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/c/SM0601011202",
+            keywords=["Trainer Box"],
+        )
+        assert alert is None
+
+    def test_store_stock_json_match(self):
+        m = SmythsToysMonitor()
+        body = (
+            '{"stores":[{"storeName":"Liverpool ONE","stockLevelStatus":"green"},'
+            '{"storeName":"Manchester","stockLevelStatus":"red"}]}'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=["Liverpool"],
+        )
+        assert alert is not None
+        assert alert.status == "in_stock"
+        assert "Liverpool" in alert.product_name
+
+    def test_store_stock_json_no_match(self):
+        m = SmythsToysMonitor()
+        body = (
+            '{"stores":[{"storeName":"Manchester","stockLevelStatus":"green"},'
+            '{"storeName":"Leeds","stockLevelStatus":"red"}]}'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=["Liverpool"],
+        )
+        assert alert is None
+
+    def test_keyword_filter_product_page(self):
+        m = SmythsToysMonitor()
+        body = '<title>Booster Pack</title><button>Add to Basket</button>'
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=["Trainer Box"],
+        )
+        assert alert is None
+
+    def test_extract_title(self):
+        m = SmythsToysMonitor()
+        body = '<html><head><title>Stellar Crown ETB</title></head><body><button>Add to Basket</button></body></html>'
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/p/237414",
+            keywords=[],
+        )
+        assert alert is not None
+        assert alert.product_name == "Stellar Crown ETB"
+
+    def test_category_absolute_url(self):
+        m = SmythsToysMonitor()
+        body = (
+            '<div class="product-card">'
+            '<a href="/uk/en-gb/brand/pokemon/p/237414">Trainer Box Deluxe</a>'
+            '<button class="addToBasket">Add to Basket</button>'
+            '</div>'
+        )
+        alert = m.parse(
+            self._make_response(body),
+            url="https://www.smythstoys.com/uk/en-gb/c/SM0601011202",
+            keywords=["Trainer Box"],
+        )
+        assert alert is not None
+        assert alert.url.startswith("https://www.smythstoys.com/")
+
+
 class TestGetMonitor:
     def test_pokemoncenter(self):
         m = get_monitor("pokemoncenter")
         assert isinstance(m, PokemonCenterMonitor)
+
+    def test_smythstoys(self):
+        m = get_monitor("smythstoys")
+        assert isinstance(m, SmythsToysMonitor)
 
     def test_generic(self):
         m = get_monitor("generic")

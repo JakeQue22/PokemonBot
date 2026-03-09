@@ -36,6 +36,7 @@ class MonitorConfig:
     keywords: list[str] = field(default_factory=list)
     interval: float = 5.0
     headers: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
 
 
 @dataclass
@@ -203,6 +204,8 @@ def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
         md["interval"] = m.interval
         if m.headers:
             md["headers"] = m.headers
+        if not m.enabled:
+            md["enabled"] = False
         monitors.append(md)
     data["monitors"] = monitors
 

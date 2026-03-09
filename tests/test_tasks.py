@@ -213,3 +213,34 @@ class TestTaskManager:
         assert state.checks == 1
         assert state.successes == 0
         assert state.errors == 1
+
+    @pytest.mark.asyncio
+    async def test_run_skips_disabled_monitors(self):
+        """Disabled monitors should not create tasks."""
+        enabled_cfg = MonitorConfig(
+            name="enabled", url="https://example.com", site="generic", enabled=True, interval=1.0
+        )
+        disabled_cfg = MonitorConfig(
+            name="disabled", url="https://example.com/off", site="generic", enabled=False, interval=1.0
+        )
+        cfg = AppConfig(monitors=[enabled_cfg, disabled_cfg])
+        manager = TaskManager(app_config=cfg)
+
+        # Start and immediately stop
+        manager.stop()
+        await manager.run()
+
+        # Only the enabled monitor should produce a task state
+        assert len(manager.task_states) == 1
+        assert manager.task_states[0].config.name == "enabled"
+
+    @pytest.mark.asyncio
+    async def test_run_all_disabled(self):
+        """When all monitors are disabled, run() returns immediately."""
+        cfg = AppConfig(monitors=[
+            MonitorConfig(name="a", url="https://example.com", enabled=False),
+            MonitorConfig(name="b", url="https://example.com", enabled=False),
+        ])
+        manager = TaskManager(app_config=cfg)
+        await manager.run()
+        assert manager.task_states == []

@@ -336,6 +336,54 @@ class TestDashboard:
         resp = await client.put("/api/monitors/99", json={"name": "x"})
         assert resp.status == 404
 
+    @pytest.mark.asyncio
+    async def test_monitors_add_includes_enabled(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.post(
+            "/api/monitors",
+            json={"url": "https://example.com/en", "name": "enabled test"},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["monitor"]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_monitors_toggle_enabled(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        # Disable the existing monitor (index 0)
+        resp = await client.put("/api/monitors/0", json={"enabled": False})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["monitor"]["enabled"] is False
+
+        # Re-enable
+        resp = await client.put("/api/monitors/0", json={"enabled": True})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["monitor"]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_monitors_list_includes_enabled(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/api/monitors")
+        data = await resp.json()
+        assert len(data["monitors"]) >= 1
+        assert "enabled" in data["monitors"][0]
+
+    @pytest.mark.asyncio
+    async def test_index_contains_smythstoys_option(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert 'value="smythstoys"' in text
+
+    @pytest.mark.asyncio
+    async def test_index_contains_toggle_monitor(self, web_app, aiohttp_client):
+        client = await aiohttp_client(web_app)
+        resp = await client.get("/")
+        text = await resp.text()
+        assert "toggleMonitor" in text
+
     # ---- Proxy CRUD tests ----
 
     @pytest.mark.asyncio

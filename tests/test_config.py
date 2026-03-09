@@ -174,3 +174,36 @@ class TestSaveConfig:
 
         reloaded = load_config(f)
         assert reloaded.concurrency == 77
+
+    def test_enabled_field_default_true(self, tmp_path):
+        """MonitorConfig.enabled defaults to True."""
+        f = tmp_path / "config.yaml"
+        f.write_text(
+            "monitors:\n  - name: test\n    url: https://example.com\n    site: generic\n    interval: 5.0\n"
+        )
+        cfg = load_config(f)
+        assert len(cfg.monitors) == 1
+        assert cfg.monitors[0].enabled is True
+
+    def test_enabled_field_false_roundtrip(self, tmp_path):
+        """A disabled monitor survives a save → load cycle."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        cfg.monitors.append(
+            MonitorConfig(name="off", url="https://example.com", site="generic", enabled=False)
+        )
+        save_config(cfg, f)
+        reloaded = load_config(f)
+        assert len(reloaded.monitors) == 1
+        assert reloaded.monitors[0].enabled is False
+
+    def test_enabled_field_true_not_written(self, tmp_path):
+        """enabled=True should not appear in the YAML (it's the default)."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        cfg.monitors.append(
+            MonitorConfig(name="on", url="https://example.com", site="generic", enabled=True)
+        )
+        save_config(cfg, f)
+        content = f.read_text()
+        assert "enabled" not in content
