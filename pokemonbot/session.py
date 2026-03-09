@@ -66,6 +66,12 @@ _DOMAIN_OVERRIDES: dict[str, dict[str, Any]] = {
     "www.pokemoncenter.com": {
         "headers": {
             "Accept-Language": "en-GB,en;q=0.9",
+            # Sec-CH-UA client hints – these are sent by real Chrome and
+            # checked by Akamai Bot Manager.  Without them the request
+            # looks like a headless/automated client.
+            "Sec-CH-UA": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"',
         },
         "cookies": {
             "pokemon-website-language": "en-gb",
@@ -105,6 +111,13 @@ def _is_timeout_error(exc: Exception) -> bool:
     # string matching for the curl error-28 ("Connection timed out") case.
     msg = str(exc).lower()
     return "timed out" in msg or "timeout" in msg
+
+
+# Human-readable reason phrases for retryable status codes.
+_STATUS_REASONS: dict[int, str] = {
+    403: "Forbidden (bot protection)",
+    429: "Too Many Requests",
+}
 
 
 def _random_user_agent(user_agents: list[str]) -> str:
@@ -258,6 +271,7 @@ async def fetch(
     extra_headers: dict[str, str] | None = None,
     max_retries: int = 3,
     direct_fallback: bool = True,
+    retry_on_status: frozenset[int] | None = None,
 ) -> dict[str, Any]:
     """Fetch a URL with automatic proxy rotation on failure.
 
@@ -276,6 +290,12 @@ async def fetch(
     request that normally fires after all proxy attempts fail is skipped.
     This is useful when the user has a large proxy pool and never wants
     their real IP exposed.
+
+    *retry_on_status*, when set, is a frozenset of HTTP status codes
+    (e.g. ``frozenset({403})``) that should be treated as retryable
+    proxy failures rather than successful responses.  This is useful for
+    sites with bot protection (e.g. Akamai on pokemoncenter.com) where
+    a 403 from one proxy may succeed from another.
 
     When ``curl_cffi`` is installed the request impersonates a real Chrome
     browser (TLS fingerprint, HTTP/2 settings, etc.) which dramatically
@@ -319,6 +339,7 @@ async def fetch(
     fast_fails = 0
 
     last_error: Exception | None = None
+    last_result: dict[str, Any] | None = None
     while True:
         # --- budget check ---
         if timeout_fails >= max_retries:
@@ -358,6 +379,28 @@ async def fetch(
                 headers=merged_headers or None,
                 cookies=domain_cookies or None,
             )
+
+            # When retry_on_status is set and the response has a
+            # retryable status code, treat this as a fast proxy failure
+            # so another proxy is tried.  This handles bot protection
+            # (e.g. Akamai on pokemoncenter.com returning 403) where
+            # the same URL may succeed from a different IP / fingerprint.
+            resp_status = result.get("status", 0)
+            if (
+                retry_on_status
+                and resp_status in retry_on_status
+                and proxy is not None
+            ):
+                fast_fails += 1
+                proxy_pool.mark_failed(proxy)  # type: ignore[union-attr]
+                logger.warning(
+                    "Proxy skip (%d) for %s: %d %s",
+                    fast_fails, url, resp_status,
+                    _STATUS_REASONS.get(resp_status, ""),
+                )
+                last_result = result
+                continue
+
             return result
         except Exception as exc:
             last_error = exc
@@ -411,6 +454,12 @@ async def fetch(
             except Exception as exc:
                 last_error = exc
                 logger.warning("Direct fallback failed for %s: %s", url, _format_error(exc))
+
+    # If every proxy returned a retryable status code (e.g. 403), return
+    # the last such response rather than raising ConnectionError.  The
+    # monitor layer can still inspect the status and act accordingly.
+    if last_result is not None and last_error is None:
+        return last_result
 
     raise ConnectionError(
         f"All {total} attempts failed for {url}"

@@ -14,6 +14,13 @@ from pokemonbot.session import fetch
 
 logger = logging.getLogger(__name__)
 
+# Sites protected by Akamai / Cloudflare may return 403 from one
+# proxy but succeed from another.  We retry on these status codes
+# for known bot-protected sites.
+_SITE_RETRY_STATUSES: dict[str, frozenset[int]] = {
+    "pokemoncenter": frozenset({403}),
+}
+
 
 @dataclass
 class TaskState:
@@ -89,6 +96,7 @@ class TaskManager:
 
     async def _check_once(self, state: TaskState, monitor: object) -> None:
         state.checks += 1
+        retry_on_status = _SITE_RETRY_STATUSES.get(state.config.site)
         try:
             response = await fetch(
                 state.config.url,
@@ -99,6 +107,7 @@ class TaskManager:
                 extra_headers=state.config.headers or None,
                 max_retries=self.app_config.max_retries,
                 direct_fallback=self.app_config.proxies.direct_fallback,
+                retry_on_status=retry_on_status,
             )
         except ConnectionError as exc:
             state.errors += 1

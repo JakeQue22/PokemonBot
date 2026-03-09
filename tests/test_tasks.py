@@ -244,3 +244,69 @@ class TestTaskManager:
         manager = TaskManager(app_config=cfg)
         await manager.run()
         assert manager.task_states == []
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_passes_retry_on_status(self):
+        """pokemoncenter monitors should pass retry_on_status={403} to fetch()."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["retry_on_status"] == frozenset({403})
+
+    @pytest.mark.asyncio
+    async def test_generic_site_no_retry_on_status(self):
+        """Generic monitors should not pass retry_on_status."""
+        monitor_cfg = MonitorConfig(
+            name="test",
+            url="https://example.com",
+            site="generic",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["retry_on_status"] is None

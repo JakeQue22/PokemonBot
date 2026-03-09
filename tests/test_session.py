@@ -63,6 +63,16 @@ class TestDomainOverrides:
         assert cookies.get("pokemon-website-language") == "en-gb"
         assert cookies.get("pokemon-website-country") == "gb"
 
+    def test_pokemoncenter_sec_ch_ua_headers(self):
+        """Pokemon Center overrides should include Sec-CH-UA client hints."""
+        headers, _ = _get_domain_overrides(
+            "https://www.pokemoncenter.com/en-gb/category/elite-trainer-box"
+        )
+        assert "Sec-CH-UA" in headers
+        assert "Sec-CH-UA-Mobile" in headers
+        assert "Sec-CH-UA-Platform" in headers
+        assert "Chrome" in headers["Sec-CH-UA"]
+
     def test_unknown_domain_empty(self):
         headers, cookies = _get_domain_overrides("https://example.com/page")
         assert headers == {}
@@ -690,3 +700,162 @@ class TestBackendRotation:
             assert result["status"] == 200
             # curl_cffi should have been tried for direct too
             assert cffi_direct_called
+
+
+class TestRetryOnStatus:
+    """Tests for the retry_on_status parameter – retries when the response
+    has a status code in the retryable set (e.g. 403 from bot protection).
+    """
+
+    @pytest.mark.asyncio
+    async def test_403_retried_until_success(self):
+        """A proxy returning 403 should be skipped; a later proxy returning 200 wins."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(10)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        call_count = 0
+        success_at = 4
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            status = 403 if call_count < success_at else 200
+            return {
+                "status": status,
+                "body": "OK" if status == 200 else "blocked",
+                "headers": {},
+                "url": url,
+            }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://www.pokemoncenter.com/test",
+                proxy_pool=pool,
+                max_retries=2,
+                retry_on_status=frozenset({403}),
+            )
+            assert result["status"] == 200
+            assert call_count == success_at
+
+    @pytest.mark.asyncio
+    async def test_403_without_retry_on_status_returns_immediately(self):
+        """Without retry_on_status, a 403 response is returned as-is."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host="10.0.0.1", port=8080),
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        call_count = 0
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "status": 403,
+                "body": "blocked",
+                "headers": {},
+                "url": url,
+            }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://www.pokemoncenter.com/test",
+                proxy_pool=pool,
+                max_retries=3,
+                # No retry_on_status → 403 returned immediately
+            )
+            assert result["status"] == 403
+            assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_all_proxies_return_403_returns_last_result(self):
+        """When every proxy returns 403 and retries are exhausted, return
+        the last 403 response (don't raise ConnectionError).
+        """
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(5)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            return {
+                "status": 403,
+                "body": "blocked",
+                "headers": {},
+                "url": url,
+            }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://www.pokemoncenter.com/test",
+                proxy_pool=pool,
+                max_retries=2,
+                retry_on_status=frozenset({403}),
+                direct_fallback=False,
+            )
+            # Should return the 403 response, not raise ConnectionError
+            assert result["status"] == 403
+
+    @pytest.mark.asyncio
+    async def test_retry_on_status_only_applies_to_proxied_requests(self):
+        """Direct (non-proxy) requests should not be retried on status code."""
+        from pokemonbot.session import fetch
+
+        call_count = 0
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "status": 403,
+                "body": "blocked",
+                "headers": {},
+                "url": url,
+            }
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://www.pokemoncenter.com/test",
+                # No proxy_pool → direct request
+                max_retries=3,
+                retry_on_status=frozenset({403}),
+            )
+            assert result["status"] == 403
+            assert call_count == 1
