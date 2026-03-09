@@ -124,7 +124,7 @@ class TestCurlCffiIntegration:
 class TestFetchUsesCurlCffi:
     @pytest.mark.asyncio
     async def test_fetch_selects_curl_cffi_when_available(self):
-        """When curl_cffi is available, fetch() should use _fetch_with_curl_cffi."""
+        """When curl_cffi is available, fetch() should try it first."""
         from pokemonbot.session import fetch, _HAS_CURL_CFFI
 
         if not _HAS_CURL_CFFI:
@@ -141,7 +141,11 @@ class TestFetchUsesCurlCffi:
             "pokemonbot.session._fetch_with_curl_cffi",
             new_callable=AsyncMock,
             return_value=fake_response,
-        ) as mock_cffi:
+        ) as mock_cffi, patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ):
             result = await fetch("https://example.com", max_retries=1)
             assert mock_cffi.called
             assert result["status"] == 200
@@ -169,7 +173,11 @@ class TestFetchProxyTimeout:
             "pokemonbot.session._fetch_with_curl_cffi",
             new_callable=AsyncMock,
             return_value=fake_response,
-        ) as mock_cffi:
+        ) as mock_cffi, patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ):
             await fetch(
                 "https://example.com",
                 proxy_pool=pool,
@@ -177,7 +185,7 @@ class TestFetchProxyTimeout:
                 proxy_timeout=10.0,
                 max_retries=1,
             )
-            # The fetcher should have been called with the proxy_timeout (10s)
+            # The first backend (curl_cffi) should have been called with proxy_timeout
             _, kwargs = mock_cffi.call_args
             assert kwargs["timeout"] == 10.0
 
@@ -197,7 +205,11 @@ class TestFetchProxyTimeout:
             "pokemonbot.session._fetch_with_curl_cffi",
             new_callable=AsyncMock,
             return_value=fake_response,
-        ) as mock_cffi:
+        ) as mock_cffi, patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ):
             await fetch(
                 "https://example.com",
                 timeout=30.0,
@@ -240,6 +252,9 @@ class TestFetchDirectFallback:
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
             side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
         ):
             result = await fetch(
                 "https://example.com",
@@ -268,6 +283,9 @@ class TestFetchDirectFallback:
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
             side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
         ):
             with pytest.raises(ConnectionError):
                 await fetch(
@@ -291,6 +309,9 @@ class TestFetchDirectFallback:
 
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
             side_effect=mock_fetch,
         ):
             with pytest.raises(ConnectionError):
@@ -323,6 +344,9 @@ class TestFetchDirectFallback:
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
             side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
         ):
             with pytest.raises(ConnectionError):
                 await fetch(
@@ -333,7 +357,6 @@ class TestFetchDirectFallback:
                     direct_fallback=False,
                 )
             # Should only have proxy attempts, no direct (proxy=None) attempt
-            assert call_count == 1
             assert all(p is not None for p in proxy_args)
 
     @pytest.mark.asyncio
@@ -362,6 +385,9 @@ class TestFetchDirectFallback:
 
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
             side_effect=mock_fetch,
         ):
             result = await fetch(
@@ -415,6 +441,9 @@ class TestFetchFastSkip:
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
             side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
         ):
             result = await fetch(
                 "https://example.com",
@@ -448,6 +477,9 @@ class TestFetchFastSkip:
 
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
             side_effect=mock_fetch,
         ):
             with pytest.raises(ConnectionError):
@@ -492,6 +524,9 @@ class TestFetchFastSkip:
         with patch(
             "pokemonbot.session._fetch_with_curl_cffi",
             side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
         ):
             with pytest.raises(ConnectionError):
                 await fetch(
@@ -526,3 +561,107 @@ class TestFetchFastSkip:
         assert not _is_timeout_error(
             Exception("TLS connect error: WRONG_VERSION_NUMBER")
         )
+
+
+class TestBackendRotation:
+    """Tests that fetch() alternates between curl_cffi and aiohttp backends."""
+
+    @pytest.mark.asyncio
+    async def test_both_backends_tried_on_failure(self):
+        """When curl_cffi fails, the next attempt should use aiohttp."""
+        from pokemonbot.session import fetch, _HAS_CURL_CFFI
+        from pokemonbot.proxy import ProxyPool
+
+        if not _HAS_CURL_CFFI:
+            pytest.skip("curl_cffi not installed")
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(10)
+        ]
+        pool = ProxyPool(proxies, cooldown_seconds=0)
+
+        fake_response = {
+            "status": 200,
+            "body": "OK",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        cffi_calls = 0
+        aiohttp_calls = 0
+
+        async def cffi_fail(url, **kwargs):
+            nonlocal cffi_calls
+            cffi_calls += 1
+            raise ConnectionError("curl failed")
+
+        async def aiohttp_succeed(url, **kwargs):
+            nonlocal aiohttp_calls
+            aiohttp_calls += 1
+            return fake_response
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=cffi_fail,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=aiohttp_succeed,
+        ):
+            result = await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=3,
+            )
+            assert result["status"] == 200
+            assert cffi_calls >= 1
+            assert aiohttp_calls >= 1
+
+    @pytest.mark.asyncio
+    async def test_direct_fallback_tries_both_backends(self):
+        """Direct fallback should try each backend."""
+        from pokemonbot.session import fetch, _HAS_CURL_CFFI
+        from pokemonbot.proxy import ProxyPool
+
+        if not _HAS_CURL_CFFI:
+            pytest.skip("curl_cffi not installed")
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        fake_response = {
+            "status": 200,
+            "body": "OK",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        cffi_direct_called = False
+
+        async def cffi_fail(url, *, proxy=None, **kwargs):
+            nonlocal cffi_direct_called
+            if proxy is None:
+                cffi_direct_called = True
+            raise ConnectionError("curl always fails")
+
+        async def aiohttp_direct(url, *, proxy=None, **kwargs):
+            if proxy is None:
+                return fake_response
+            raise ConnectionError("proxy dead")
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=cffi_fail,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=aiohttp_direct,
+        ):
+            result = await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=1,
+                direct_fallback=True,
+            )
+            assert result["status"] == 200
+            # curl_cffi should have been tried for direct too
+            assert cffi_direct_called

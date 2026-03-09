@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import random
 import ssl
+from collections.abc import Callable, Coroutine
 from typing import Any
 from urllib.parse import urlparse
 
@@ -39,6 +41,9 @@ _IMPERSONATE_BROWSERS: list[str] = [
 # Fast failures (SOCKS, TLS, CONNECT errors) return in < 1 s so trying
 # many in a row adds negligible wall-clock time compared to timeouts.
 _MAX_FAST_PROXY_SKIPS: int = 100
+
+# Type alias for fetcher backend functions (curl_cffi / aiohttp).
+_Fetcher = Callable[..., Coroutine[Any, Any, dict[str, Any]]]
 
 
 def _default_ssl_context() -> ssl.SSLContext:
@@ -268,8 +273,17 @@ async def fetch(
     domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
-    # Choose the fetcher implementation.
-    do_fetch = _fetch_with_curl_cffi if _HAS_CURL_CFFI else _fetch_with_aiohttp
+    # Build an ordered list of fetcher backends.  When curl_cffi is
+    # available the list contains *both* backends so the retry loop can
+    # alternate between them.  Different HTTP / TLS stacks handle
+    # different proxies differently – curl_cffi gives Chrome TLS
+    # fingerprint impersonation while aiohttp uses a standard Python
+    # TLS stack which may succeed where curl fails (and vice-versa).
+    backends: list[_Fetcher] = []
+    if _HAS_CURL_CFFI:
+        backends.append(_fetch_with_curl_cffi)
+    backends.append(_fetch_with_aiohttp)
+    backend_cycle = itertools.cycle(backends)
 
     # --- Retry budget --------------------------------------------------
     # When a proxy pool is present, proxy failures fall into two buckets:
@@ -314,6 +328,7 @@ async def fetch(
             else timeout
         )
 
+        do_fetch = next(backend_cycle)
         try:
             logger.debug(
                 "GET %s via %s (timeout=%.0fs)",
@@ -358,28 +373,30 @@ async def fetch(
 
     # --- Direct-connection fallback ---
     # When a proxy pool is configured but every proxied attempt failed,
-    # try ONE final request without a proxy.  This keeps the monitors
-    # alive even when all public proxies are dead.
+    # try each backend once without a proxy.  curl_cffi provides Chrome
+    # fingerprint impersonation; aiohttp uses a standard TLS stack.
+    # Trying both maximises the chance of getting through.
     # Disabled when direct_fallback=False (user has a large pool and
     # never wants their real IP exposed).
     if proxy_pool is not None and direct_fallback:
-        try:
-            logger.info(
-                "All proxy attempts exhausted – trying direct connection for %s",
-                url,
-            )
-            result = await do_fetch(
-                url,
-                proxy=None,
-                user_agents=user_agents,
-                timeout=timeout,
-                headers=merged_headers or None,
-                cookies=domain_cookies or None,
-            )
-            return result
-        except Exception as exc:
-            last_error = exc
-            logger.warning("Direct fallback also failed for %s: %s", url, exc)
+        for do_fetch in backends:
+            try:
+                logger.info(
+                    "Trying direct connection for %s",
+                    url,
+                )
+                result = await do_fetch(
+                    url,
+                    proxy=None,
+                    user_agents=user_agents,
+                    timeout=timeout,
+                    headers=merged_headers or None,
+                    cookies=domain_cookies or None,
+                )
+                return result
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Direct fallback failed for %s: %s", url, exc)
 
     raise ConnectionError(
         f"All {total} attempts failed for {url}"
