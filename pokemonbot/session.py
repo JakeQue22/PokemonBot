@@ -576,7 +576,7 @@ async def fetch_with_browser(
         ),
         viewport={"width": 1920, "height": 1080},
         locale="en-GB",
-        extra_http_headers=merged_headers or None,
+        extra_http_headers=merged_headers,
     )
 
     # Inject domain cookies before navigation.

@@ -279,8 +279,8 @@ class TestTaskManager:
             await manager._check_once(state, monitor)
 
         mock_browser_fetch.assert_called_once()
-        _, kwargs = mock_browser_fetch.call_args
-        assert "url" not in kwargs or kwargs.get("url") == monitor_cfg.url
+        args, kwargs = mock_browser_fetch.call_args
+        assert args[0] == monitor_cfg.url
 
     @pytest.mark.asyncio
     async def test_pokemoncenter_falls_back_without_playwright(self):
