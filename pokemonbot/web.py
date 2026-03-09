@@ -911,7 +911,7 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <label>Concurrency</label>    <input id="gen-concurrency" type="number" value="10" min="1">
             <label>Request Timeout (s)</label> <input id="gen-timeout" type="number" value="30" min="1" step="1">
             <label>Max Retries per Request</label> <input id="gen-max-retries" type="number" value="10" min="1" step="1">
-            <label>Direct Fallback</label> <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer"><input id="gen-direct-fallback" type="checkbox" checked> Try direct (no-proxy) connection when all proxies fail</label>
+            <label>Direct Fallback</label> <div style="display:flex;align-items:center;gap:.5rem"><input id="gen-direct-fallback" type="checkbox" checked> <span style="cursor:pointer" onclick="document.getElementById('gen-direct-fallback').click()">Try direct (no-proxy) connection when all proxies fail</span></div>
             <label>Base URL (external SSL)</label> <input id="gen-base-url" placeholder="https://mybot.example.com">
           </div>
           <p style="color:var(--text-muted);font-size:.85rem;margin:.4rem 0 0">
