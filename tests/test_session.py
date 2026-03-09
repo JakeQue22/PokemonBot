@@ -357,6 +357,7 @@ class TestFetchDirectFallback:
                     direct_fallback=False,
                 )
             # Should only have proxy attempts, no direct (proxy=None) attempt
+            assert call_count >= 1
             assert all(p is not None for p in proxy_args)
 
     @pytest.mark.asyncio
