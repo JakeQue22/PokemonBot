@@ -73,7 +73,7 @@ class AppConfig:
     user_agents: list[str] = field(default_factory=lambda: _DEFAULT_USER_AGENTS.copy())
     concurrency: int = 10
     request_timeout: float = 30.0
-    max_retries: int = 10
+    max_retries: int = 3
     portal_name: str = "PokemonBot"
     base_url: str = ""
 
@@ -137,7 +137,7 @@ def load_config(path: str | Path) -> AppConfig:
     user_agents = raw.get("user_agents", _DEFAULT_USER_AGENTS.copy())
     concurrency = int(raw.get("concurrency", 10))
     request_timeout = float(raw.get("request_timeout", 30.0))
-    max_retries = int(raw.get("max_retries", 10))
+    max_retries = int(raw.get("max_retries", 3))
 
     return AppConfig(
         proxies=proxies,
@@ -187,7 +187,7 @@ def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
         data["concurrency"] = cfg.concurrency
     if cfg.request_timeout != 30.0:
         data["request_timeout"] = cfg.request_timeout
-    if cfg.max_retries != 10:
+    if cfg.max_retries != 3:
         data["max_retries"] = cfg.max_retries
     if cfg.portal_name and cfg.portal_name != "PokemonBot":
         data["portal_name"] = cfg.portal_name

@@ -1296,7 +1296,7 @@ async function loadGeneral(){
     document.getElementById('gen-name').value=d.portal_name||'';
     document.getElementById('gen-concurrency').value=d.concurrency||10;
     document.getElementById('gen-timeout').value=d.request_timeout||30;
-    document.getElementById('gen-max-retries').value=d.max_retries||10;
+    document.getElementById('gen-max-retries').value=d.max_retries||3;
     document.getElementById('gen-direct-fallback').checked=d.direct_fallback!==false;
     document.getElementById('gen-base-url').value=d.base_url||'';
   }catch(e){}
@@ -1306,7 +1306,7 @@ async function saveGeneral(){
     portal_name:document.getElementById('gen-name').value.trim(),
     concurrency:parseInt(document.getElementById('gen-concurrency').value)||10,
     request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30,
-    max_retries:parseInt(document.getElementById('gen-max-retries').value)||10,
+    max_retries:parseInt(document.getElementById('gen-max-retries').value)||3,
     direct_fallback:document.getElementById('gen-direct-fallback').checked,
     base_url:document.getElementById('gen-base-url').value.trim()
   };

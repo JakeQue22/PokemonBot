@@ -8,6 +8,7 @@ import pytest
 from pokemonbot.proxy import Proxy
 from pokemonbot.session import (
     _build_connector,
+    _format_error,
     _get_domain_overrides,
     _random_user_agent,
     _HAS_CURL_CFFI,
@@ -66,6 +67,28 @@ class TestDomainOverrides:
         headers, cookies = _get_domain_overrides("https://example.com/page")
         assert headers == {}
         assert cookies == {}
+
+
+class TestFormatError:
+    def test_message_preserved(self):
+        """When the exception has a message, _format_error returns it."""
+        exc = ConnectionError("SOCKS5 connection refused")
+        assert _format_error(exc) == "SOCKS5 connection refused"
+
+    def test_empty_message_uses_class_name(self):
+        """When str(exc) is empty, the class name is returned."""
+        exc = asyncio.TimeoutError()
+        assert _format_error(exc) == "TimeoutError"
+
+    def test_empty_string_message_uses_class_name(self):
+        exc = Exception("")
+        assert _format_error(exc) == "Exception"
+
+    def test_subclass_qualname(self):
+        """Nested/subclass names should use qualname for clarity."""
+        exc = ConnectionResetError()
+        result = _format_error(exc)
+        assert result == "ConnectionResetError"
 
 
 class TestBuildConnector:

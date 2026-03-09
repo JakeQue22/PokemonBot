@@ -75,6 +75,20 @@ _DOMAIN_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+def _format_error(exc: Exception) -> str:
+    """Return a human-readable description of *exc*.
+
+    Some exceptions (e.g. ``asyncio.TimeoutError()``) have an empty
+    ``str()`` representation, making retry log lines unreadable.  This
+    helper falls back to the class name so there is always useful
+    context in the log.
+    """
+    msg = str(exc)
+    if msg:
+        return msg
+    return type(exc).__qualname__
+
+
 def _is_timeout_error(exc: Exception) -> bool:
     """Return ``True`` if *exc* indicates a connection/proxy timeout.
 
@@ -355,13 +369,13 @@ async def fetch(
             if proxy is not None and not _is_timeout_error(exc):
                 # Fast proxy failure – skip to next proxy immediately.
                 fast_fails += 1
-                logger.warning("Proxy skip (%d) for %s: %s", fast_fails, url, exc)
+                logger.warning("Proxy skip (%d) for %s: %s", fast_fails, url, _format_error(exc))
             else:
                 # Timeout or non-proxy failure – count toward max_retries.
                 timeout_fails += 1
                 logger.warning(
                     "Attempt %d/%d failed for %s: %s",
-                    timeout_fails, max_retries, url, exc,
+                    timeout_fails, max_retries, url, _format_error(exc),
                 )
                 # Small random jitter between retries to look more human-like
                 # and avoid hammering the target in a tight loop.
@@ -396,7 +410,7 @@ async def fetch(
                 return result
             except Exception as exc:
                 last_error = exc
-                logger.warning("Direct fallback failed for %s: %s", url, exc)
+                logger.warning("Direct fallback failed for %s: %s", url, _format_error(exc))
 
     raise ConnectionError(
         f"All {total} attempts failed for {url}"
