@@ -116,8 +116,11 @@ class TaskManager:
             if use_browser:
                 response = await fetch_with_browser(
                     state.config.url,
+                    proxy_pool=self.proxy_pool,
                     timeout=self.app_config.request_timeout,
+                    proxy_timeout=self.app_config.proxies.timeout,
                     extra_headers=state.config.headers or None,
+                    max_retries=self.app_config.max_retries,
                 )
             else:
                 response = await fetch(

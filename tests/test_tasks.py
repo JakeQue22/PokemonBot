@@ -281,6 +281,8 @@ class TestTaskManager:
         mock_browser_fetch.assert_called_once()
         args, kwargs = mock_browser_fetch.call_args
         assert args[0] == monitor_cfg.url
+        # Verify proxy_pool is passed to browser fetch
+        assert "proxy_pool" in kwargs
 
     @pytest.mark.asyncio
     async def test_pokemoncenter_falls_back_without_playwright(self):

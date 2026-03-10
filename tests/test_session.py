@@ -907,3 +907,94 @@ class TestPlaywrightSupport:
         from pokemonbot.tasks import _BROWSER_SITES
 
         assert "pokemoncenter" in _BROWSER_SITES
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_passes_proxy_pool(self):
+        """fetch_with_browser() should pass proxy to _browser_fetch_once."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        fake_response = {
+            "status": 200,
+            "body": "OK",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_once:
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+            )
+            assert result["status"] == 200
+            mock_once.assert_called_once()
+            _, kwargs = mock_once.call_args
+            assert kwargs["proxy"] is not None
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_retries_on_403(self):
+        """fetch_with_browser() retries with another proxy on 403."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy1 = Proxy(protocol="http", host="1.1.1.1", port=8080)
+        proxy2 = Proxy(protocol="http", host="2.2.2.2", port=8080)
+        pool = ProxyPool([proxy1, proxy2], shuffle=False)
+
+        call_count = 0
+
+        async def mock_once(url, *, proxy=None, timeout=30.0, extra_headers=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"status": 403, "body": "Forbidden", "headers": {}, "url": url}
+            return {"status": 200, "body": "OK", "headers": {}, "url": url}
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            side_effect=mock_once,
+        ):
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=3,
+            )
+            assert result["status"] == 200
+            assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_raises_after_max_retries(self):
+        """fetch_with_browser() raises ConnectionError after max_retries."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("browser error"),
+        ):
+            with pytest.raises(ConnectionError):
+                await fetch_with_browser(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    max_retries=2,
+                )

@@ -539,45 +539,45 @@ async def close_browser() -> None:
         _pw_instance = None
 
 
-async def fetch_with_browser(
+async def _browser_fetch_once(
     url: str,
     *,
+    proxy: Proxy | None = None,
     timeout: float = 30.0,
     extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch *url* using a real Chromium browser via Playwright.
+    """Single browser fetch attempt, optionally routed through *proxy*.
 
-    This executes JavaScript automatically, handling Akamai Bot Manager
-    challenges that block pure HTTP clients (curl_cffi, aiohttp).
-
-    Returns a dict with ``status``, ``body``, ``headers``, and ``url``
-    matching the format used by :func:`fetch`.
-
-    Falls back to :func:`fetch` (curl_cffi/aiohttp) if Playwright is
-    not installed.
+    Handles Akamai Bot Manager / PerimeterX challenges by waiting for
+    the challenge page to render, clicking the captcha checkbox if
+    present, and then waiting for the page to resolve.
     """
-    if not _HAS_PLAYWRIGHT:
-        logger.warning(
-            "Playwright not installed – falling back to HTTP fetch for %s",
-            url,
-        )
-        return await fetch(url, timeout=timeout, extra_headers=extra_headers)
-
     browser = await _ensure_browser()
 
     domain_headers, domain_cookies = _get_domain_overrides(url)
     merged_headers = {**domain_headers, **(extra_headers or {})}
 
-    context = await browser.new_context(
-        user_agent=(
+    ctx_kwargs: dict[str, Any] = {
+        "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/136.0.0.0 Safari/537.36"
         ),
-        viewport={"width": 1920, "height": 1080},
-        locale="en-GB",
-        extra_http_headers=merged_headers,
-    )
+        "viewport": {"width": 1920, "height": 1080},
+        "locale": "en-GB",
+        "extra_http_headers": merged_headers,
+    }
+
+    # Route the browser context through a proxy when available.
+    if proxy is not None:
+        proxy_cfg: dict[str, str] = {"server": proxy.url}
+        if proxy.username:
+            proxy_cfg["username"] = proxy.username
+            proxy_cfg["password"] = proxy.password
+        ctx_kwargs["proxy"] = proxy_cfg
+        ctx_kwargs["ignore_https_errors"] = True
+
+    context = await browser.new_context(**ctx_kwargs)
 
     # Inject domain cookies before navigation.
     if domain_cookies:
@@ -596,10 +596,47 @@ async def fetch_with_browser(
             wait_until="domcontentloaded",
             timeout=timeout_ms,
         )
-        # Allow time for any Akamai / DataDome JS challenges to resolve.
-        # The challenge page typically executes JS within a few seconds
-        # which sets cookies and redirects to the real page.
-        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+
+        # -----------------------------------------------------------------
+        # Challenge / captcha handling
+        # -----------------------------------------------------------------
+        # Wait 3 seconds for any Akamai / PerimeterX / DataDome challenge
+        # page to fully render its interactive elements.
+        await asyncio.sleep(3)
+
+        # Common challenge selectors used by bot-protection services.
+        _CHALLENGE_SELECTORS = [
+            # Akamai Bot Manager / PerimeterX challenge checkbox
+            "#challenge-stage input[type='checkbox']",
+            "#px-captcha",
+            "iframe[title*='challenge']",
+            "iframe[src*='captcha']",
+            # PerimeterX HUMAN challenge
+            "#px-captcha-wrapper button",
+            # Cloudflare Turnstile
+            "iframe[src*='challenges.cloudflare.com']",
+            # Generic challenge buttons
+            "#challenge-running",
+            "button[data-action='verify']",
+        ]
+
+        for selector in _CHALLENGE_SELECTORS:
+            try:
+                elem = await page.query_selector(selector)
+                if elem is not None and await elem.is_visible():
+                    logger.info("Clicking challenge element %s for %s", selector, url)
+                    await elem.click()
+                    # Wait for the challenge to resolve after clicking.
+                    await asyncio.sleep(3)
+                    break
+            except Exception:
+                pass
+
+        # Wait for network to settle after any challenge resolution.
+        try:
+            await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except Exception:
+            pass  # best-effort; page content may still be usable
 
         body = await page.content()
         status = response.status if response else 0
@@ -612,10 +649,88 @@ async def fetch_with_browser(
             "headers": dict(resp_headers),
             "url": final_url,
         }
-    except Exception as exc:
-        raise ConnectionError(
-            f"Browser fetch failed for {url}: {_format_error(exc)}"
-        ) from exc
     finally:
         await page.close()
         await context.close()
+
+
+async def fetch_with_browser(
+    url: str,
+    *,
+    proxy_pool: ProxyPool | None = None,
+    timeout: float = 30.0,
+    proxy_timeout: float | None = None,
+    extra_headers: dict[str, str] | None = None,
+    max_retries: int = 3,
+) -> dict[str, Any]:
+    """Fetch *url* using a real Chromium browser via Playwright.
+
+    This executes JavaScript automatically, handling Akamai Bot Manager
+    challenges that block pure HTTP clients (curl_cffi, aiohttp).
+
+    When *proxy_pool* is provided, each attempt routes through a
+    different proxy.  Proxies that return 403 or fail are marked as
+    failed and the next proxy is tried.
+
+    Returns a dict with ``status``, ``body``, ``headers``, and ``url``
+    matching the format used by :func:`fetch`.
+
+    Falls back to :func:`fetch` (curl_cffi/aiohttp) if Playwright is
+    not installed.
+    """
+    if not _HAS_PLAYWRIGHT:
+        logger.warning(
+            "Playwright not installed – falling back to HTTP fetch for %s",
+            url,
+        )
+        return await fetch(url, timeout=timeout, extra_headers=extra_headers)
+
+    effective_timeout = proxy_timeout if proxy_timeout is not None else timeout
+    attempts = 0
+
+    while attempts < max_retries:
+        proxy: Proxy | None = None
+        if proxy_pool is not None:
+            proxy = proxy_pool.next_available()
+            if proxy is None:
+                logger.warning(
+                    "All %d proxies on cooldown for browser fetch of %s",
+                    proxy_pool.size, url,
+                )
+                break
+
+        attempts += 1
+        try:
+            result = await _browser_fetch_once(
+                url,
+                proxy=proxy,
+                timeout=effective_timeout,
+                extra_headers=extra_headers,
+            )
+
+            # Treat 403 as a proxy failure when we have a proxy pool.
+            resp_status = result.get("status", 0)
+            if resp_status == 403 and proxy is not None and proxy_pool is not None:
+                proxy_pool.mark_failed(proxy)
+                logger.warning(
+                    "Browser proxy skip (%d/%d) for %s: 403 %s via %s",
+                    attempts, max_retries, url,
+                    _STATUS_REASONS.get(403, ""), proxy,
+                )
+                continue
+
+            return result
+        except Exception as exc:
+            if proxy is not None and proxy_pool is not None:
+                proxy_pool.mark_failed(proxy)
+            logger.warning(
+                "Browser attempt %d/%d failed for %s via %s: %s",
+                attempts, max_retries, url, proxy or "direct",
+                _format_error(exc),
+            )
+            if attempts < max_retries:
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+
+    raise ConnectionError(
+        f"All {attempts} browser attempts failed for {url}"
+    )

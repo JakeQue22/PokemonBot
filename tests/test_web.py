@@ -744,20 +744,20 @@ class TestDashboard:
         resp = await client.get("/api/general-settings")
         data = await resp.json()
         assert "direct_fallback" in data
-        assert data["direct_fallback"] is True  # default
+        assert data["direct_fallback"] is False  # default
 
     @pytest.mark.asyncio
     async def test_general_settings_direct_fallback_roundtrip(self, web_app, aiohttp_client):
-        """Setting direct_fallback=False should be retrievable."""
+        """Setting direct_fallback=True should be retrievable."""
         client = await aiohttp_client(web_app)
         resp = await client.post(
             "/api/general-settings",
-            json={"direct_fallback": False},
+            json={"direct_fallback": True},
         )
         assert resp.status == 200
         resp = await client.get("/api/general-settings")
         data = await resp.json()
-        assert data["direct_fallback"] is False
+        assert data["direct_fallback"] is True
 
     @pytest.mark.asyncio
     async def test_index_contains_direct_fallback_checkbox(self, web_app, aiohttp_client):
