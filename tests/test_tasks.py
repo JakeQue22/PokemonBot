@@ -353,3 +353,103 @@ class TestTaskManager:
 
         _, kwargs = mock_fetch.call_args
         assert kwargs["retry_on_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_smythstoys_allows_direct_fallback(self):
+        """Smyths monitors should pass direct_fallback=True so they work without proxies."""
+        monitor_cfg = MonitorConfig(
+            name="Smyths Test",
+            url="https://www.smythstoys.com/uk/en-gb/p/255839",
+            site="smythstoys",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<span>Out of Stock</span>',
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import SmythsToysMonitor
+
+        monitor = SmythsToysMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["direct_fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_disables_direct_fallback(self):
+        """Pokemon Center monitors must never use direct fallback."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        # When Playwright is NOT available, falls back to fetch() – check direct_fallback
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            False,
+        ):
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["direct_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_once_logs_stock_status(self, caplog):
+        """A successful check should log the stock status from describe_status()."""
+        import logging
+        monitor_cfg = MonitorConfig(
+            name="Smyths Test",
+            url="https://www.smythstoys.com/uk/en-gb/p/255839",
+            site="smythstoys",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<span class="availability">Out of Stock</span>',
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import SmythsToysMonitor
+
+        monitor = SmythsToysMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                await manager._check_once(state, monitor)
+
+        assert any("Out of stock" in r.message for r in caplog.records)

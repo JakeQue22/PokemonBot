@@ -106,6 +106,31 @@ class TestPokemonCenterMonitor:
         assert alert is not None
         assert alert.product_name == "Cool Product"
 
+    def test_describe_status_out_of_stock(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response('<span>Sold Out</span>')
+        assert m.describe_status(resp, url="https://example.com") == "Out of stock"
+
+    def test_describe_status_in_stock(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response('{"availability": "InStock"}')
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
+    def test_describe_status_queue(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response('<div>You are in the queue</div>')
+        assert m.describe_status(resp, url="https://example.com") == "Queue active"
+
+    def test_describe_status_403(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response("blocked", status=403)
+        assert m.describe_status(resp, url="https://example.com") == "Access denied (bot protection)"
+
+    def test_describe_status_no_data(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response("<p>Nothing</p>")
+        assert m.describe_status(resp, url="https://example.com") == "No stock data found"
+
 
 class TestGenericMonitor:
     def _make_response(self, body: str, status: int = 200) -> dict:
@@ -310,6 +335,26 @@ class TestSmythsToysMonitor:
         )
         assert alert is not None
         assert alert.url.startswith("https://www.smythstoys.com/")
+
+    def test_describe_status_out_of_stock(self):
+        m = SmythsToysMonitor()
+        resp = self._make_response('<span>Out of Stock</span>')
+        assert m.describe_status(resp, url="https://www.smythstoys.com/uk/en-gb/p/237414") == "Out of stock"
+
+    def test_describe_status_in_stock(self):
+        m = SmythsToysMonitor()
+        resp = self._make_response('<button>Add to Basket</button>')
+        assert m.describe_status(resp, url="https://www.smythstoys.com/uk/en-gb/p/237414") == "In stock"
+
+    def test_describe_status_403(self):
+        m = SmythsToysMonitor()
+        resp = self._make_response("blocked", status=403)
+        assert m.describe_status(resp, url="https://www.smythstoys.com/uk/en-gb/p/237414") == "Access denied (bot protection)"
+
+    def test_describe_status_no_data(self):
+        m = SmythsToysMonitor()
+        resp = self._make_response("<p>Nothing</p>")
+        assert m.describe_status(resp, url="https://www.smythstoys.com/uk/en-gb/p/237414") == "No stock data found"
 
 
 class TestGetMonitor:

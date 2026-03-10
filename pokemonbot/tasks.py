@@ -31,6 +31,12 @@ _SITE_RETRY_STATUSES: dict[str, frozenset[int]] = {
 # challenge cookies.  curl/aiohttp cannot handle these.
 _BROWSER_SITES: frozenset[str] = frozenset({"pokemoncenter"})
 
+# Sites that MUST always go through a proxy – the direct-connection
+# fallback is disabled for these so the real IP is never exposed.
+# Other sites are allowed to fall back to a direct connection when
+# all proxy attempts fail.
+_PROXY_REQUIRED_SITES: frozenset[str] = frozenset({"pokemoncenter"})
+
 
 @dataclass
 class TaskState:
@@ -112,6 +118,12 @@ class TaskManager:
             state.config.site in _BROWSER_SITES and _HAS_PLAYWRIGHT
         )
         retry_on_status = _SITE_RETRY_STATUSES.get(state.config.site)
+
+        # Sites in _PROXY_REQUIRED_SITES must never fall back to a direct
+        # connection so the real IP stays hidden.  Other sites are allowed
+        # to fall through when all proxies fail.
+        direct_fallback = state.config.site not in _PROXY_REQUIRED_SITES
+
         try:
             if use_browser:
                 response = await fetch_with_browser(
@@ -131,7 +143,7 @@ class TaskManager:
                     proxy_timeout=self.app_config.proxies.timeout,
                     extra_headers=state.config.headers or None,
                     max_retries=self.app_config.max_retries,
-                    direct_fallback=self.app_config.proxies.direct_fallback,
+                    direct_fallback=direct_fallback,
                     retry_on_status=retry_on_status,
                 )
         except ConnectionError as exc:
@@ -150,15 +162,19 @@ class TaskManager:
 
         if alert is None:
             status_code = response.get("status", 0)
+            # Get a human-readable stock status from the monitor.
+            status_desc = monitor.describe_status(  # type: ignore[union-attr]
+                response, url=state.config.url,
+            )
             if 200 <= status_code < 400:
                 logger.info(
-                    "Monitor [%s] check #%d OK (HTTP %d) – no change",
-                    state.config.name, state.checks, status_code,
+                    "Monitor [%s] check #%d OK (HTTP %d) – %s",
+                    state.config.name, state.checks, status_code, status_desc,
                 )
             else:
                 logger.debug(
-                    "Monitor [%s] check #%d (HTTP %d) – no change",
-                    state.config.name, state.checks, status_code,
+                    "Monitor [%s] check #%d (HTTP %d) – %s",
+                    state.config.name, state.checks, status_code, status_desc,
                 )
             return
 

@@ -21,6 +21,15 @@ class BaseMonitor(abc.ABC):
     def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
         """Parse an HTTP response and return an ``Alert`` if a notable state is detected."""
 
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        """Return a short human-readable stock status for logging.
+
+        Called when ``parse()`` returns ``None`` to give the user a
+        meaningful status line (e.g. *Out of stock*) instead of the
+        generic *no change*.
+        """
+        return "no change"
+
     def _keyword_match(self, text: str, keywords: list[str]) -> bool:
         if not keywords:
             return True
@@ -54,6 +63,24 @@ class PokemonCenterMonitor(BaseMonitor):
         re.compile(r'queue\.it', re.IGNORECASE),
     ]
     _PRICE_PATTERN = re.compile(r'"price"\s*:\s*"?([\d.]+)"?')
+
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+        if status_code == 403:
+            return "Access denied (bot protection)"
+        if status_code >= 500:
+            return f"Server error ({status_code})"
+        for pat in self._QUEUE_PATTERNS:
+            if pat.search(body):
+                return "Queue active"
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                return "Out of stock"
+        for pat in self._ADD_TO_CART_PATTERNS:
+            if pat.search(body):
+                return "In stock"
+        return "No stock data found"
 
     def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
         body: str = response.get("body", "")
@@ -199,6 +226,21 @@ class SmythsToysMonitor(BaseMonitor):
         r'"(?:stock[Ll]evel(?:Status)?|availableStock)"\s*:\s*"?(?P<stock>[^",}]+)',
         re.DOTALL,
     )
+
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+        if status_code == 403:
+            return "Access denied (bot protection)"
+        if status_code >= 500:
+            return f"Server error ({status_code})"
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                return "Out of stock"
+        for pat in self._ADD_TO_BASKET_PATTERNS:
+            if pat.search(body):
+                return "In stock"
+        return "No stock data found"
 
     def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
         body: str = response.get("body", "")
