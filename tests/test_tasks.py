@@ -1,6 +1,7 @@
 """Tests for the task manager module."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -136,7 +137,6 @@ class TestTaskManager:
     @pytest.mark.asyncio
     async def test_check_once_logs_success_at_info(self, caplog):
         """A successful check with no alert should log an INFO-level OK message."""
-        import logging
         monitor_cfg = MonitorConfig(
             name="test", url="https://example.com", site="generic"
         )
@@ -427,7 +427,6 @@ class TestTaskManager:
     @pytest.mark.asyncio
     async def test_check_once_logs_stock_status(self, caplog):
         """A successful check should log the stock status from describe_status()."""
-        import logging
         monitor_cfg = MonitorConfig(
             name="Smyths Test",
             url="https://www.smythstoys.com/uk/en-gb/p/255839",
