@@ -630,13 +630,13 @@ async def _browser_fetch_once(
                     await asyncio.sleep(3)
                     break
             except Exception:
-                pass
+                logger.debug("Challenge selector %s not interactable for %s", selector, url)
 
         # Wait for network to settle after any challenge resolution.
         try:
             await page.wait_for_load_state("networkidle", timeout=timeout_ms)
-        except Exception:
-            pass  # best-effort; page content may still be usable
+        except Exception as exc:
+            logger.debug("Network idle wait failed for %s: %s", url, _format_error(exc))
 
         body = await page.content()
         status = response.status if response else 0
