@@ -24,12 +24,13 @@ logger = logging.getLogger(__name__)
 # for known bot-protected sites.
 _SITE_RETRY_STATUSES: dict[str, frozenset[int]] = {
     "pokemoncenter": frozenset({403}),
+    "smythstoys": frozenset({403}),
 }
 
 # Sites where a real browser is required because the anti-bot layer
 # (e.g. Akamai Bot Manager) demands JavaScript execution to set
 # challenge cookies.  curl/aiohttp cannot handle these.
-_BROWSER_SITES: frozenset[str] = frozenset({"pokemoncenter"})
+_BROWSER_SITES: frozenset[str] = frozenset({"pokemoncenter", "smythstoys"})
 
 # Sites that MUST always go through a proxy – the direct-connection
 # fallback is disabled for these so the real IP is never exposed.
@@ -134,6 +135,7 @@ class TaskManager:
                     extra_headers=state.config.headers or None,
                     max_retries=self.app_config.max_retries,
                     direct_fallback=direct_fallback,
+                    retry_on_status=retry_on_status,
                 )
             else:
                 response = await fetch(

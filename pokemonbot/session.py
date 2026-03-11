@@ -663,6 +663,7 @@ async def fetch_with_browser(
     extra_headers: dict[str, str] | None = None,
     max_retries: int = 3,
     direct_fallback: bool = True,
+    retry_on_status: frozenset[int] | None = None,
 ) -> dict[str, Any]:
     """Fetch *url* using a real Chromium browser via Playwright.
 
@@ -670,8 +671,17 @@ async def fetch_with_browser(
     challenges that block pure HTTP clients (curl_cffi, aiohttp).
 
     When *proxy_pool* is provided, each attempt routes through a
-    different proxy.  Proxies that return 403 or fail are marked as
-    failed and the next proxy is tried.
+    different proxy.  Proxies that return a retryable status code or
+    fail are marked as failed and the next proxy is tried.
+
+    The retry budget mirrors :func:`fetch`: expensive **timeout** errors
+    are capped at *max_retries* while cheap **fast failures** (SOCKS,
+    TLS, CONNECT errors that return in < 1 s) get a separate, larger
+    budget so the bot can skip many dead proxies without stalling.
+
+    *retry_on_status*, when set, is a frozenset of HTTP status codes
+    (e.g. ``frozenset({403})``) that should be treated as retryable
+    proxy failures rather than successful responses.
 
     When *direct_fallback* is ``True`` (the default) and a proxy pool
     is configured but every proxied attempt fails, one final attempt is
@@ -692,9 +702,24 @@ async def fetch_with_browser(
         return await fetch(url, timeout=timeout, extra_headers=extra_headers)
 
     effective_timeout = proxy_timeout if proxy_timeout is not None else timeout
-    attempts = 0
 
-    while attempts < max_retries:
+    # --- Retry budget (mirrors fetch()) --------------------------------
+    # Timeout failures are expensive (each waits for the full timeout).
+    # Fast proxy failures (SOCKS, TLS, CONNECT) return in < 1 s and are
+    # given a separate, larger budget.
+    max_fast = min(proxy_pool.size, _MAX_FAST_PROXY_SKIPS) if proxy_pool else 0
+    timeout_fails = 0
+    fast_fails = 0
+    last_error: Exception | None = None
+    last_result: dict[str, Any] | None = None
+
+    while True:
+        # --- budget check ---
+        if timeout_fails >= max_retries:
+            break
+        if proxy_pool and fast_fails >= max_fast:
+            break
+
         proxy: Proxy | None = None
         if proxy_pool is not None:
             proxy = proxy_pool.next_available()
@@ -705,7 +730,6 @@ async def fetch_with_browser(
                 )
                 break
 
-        attempts += 1
         try:
             result = await _browser_fetch_once(
                 url,
@@ -714,28 +738,58 @@ async def fetch_with_browser(
                 extra_headers=extra_headers,
             )
 
-            # Treat 403 as a proxy failure when we have a proxy pool.
+            # Treat retryable status codes as fast proxy failures so
+            # another proxy is tried.  This handles bot protection
+            # (e.g. Akamai returning 403) where the same URL may
+            # succeed from a different IP.
             resp_status = result.get("status", 0)
-            if resp_status == 403 and proxy is not None and proxy_pool is not None:
+            if (
+                retry_on_status is not None
+                and resp_status in retry_on_status
+                and proxy is not None
+                and proxy_pool is not None
+            ):
+                fast_fails += 1
                 proxy_pool.mark_failed(proxy)
                 logger.warning(
-                    "Browser proxy skip (%d/%d) for %s: 403 %s via %s",
-                    attempts, max_retries, url,
-                    _STATUS_REASONS.get(403, ""), proxy,
+                    "Browser proxy skip (%d) for %s: %d %s via %s",
+                    fast_fails, url, resp_status,
+                    _STATUS_REASONS.get(resp_status, ""), proxy,
                 )
+                last_result = result
                 continue
 
+            logger.info(
+                "Browser fetch OK for %s (HTTP %d) via %s",
+                url, resp_status, proxy or "direct",
+            )
             return result
         except Exception as exc:
+            last_error = exc
+
             if proxy is not None and proxy_pool is not None:
                 proxy_pool.mark_failed(proxy)
-            logger.warning(
-                "Browser attempt %d/%d failed for %s via %s: %s",
-                attempts, max_retries, url, proxy or "direct",
-                _format_error(exc),
-            )
-            if attempts < max_retries:
-                await asyncio.sleep(random.uniform(0.5, 2.0))
+
+            # Classify the failure and adjust budget / logging.
+            if proxy is not None and not _is_timeout_error(exc):
+                # Fast proxy failure – skip to next proxy immediately.
+                fast_fails += 1
+                logger.warning(
+                    "Browser proxy skip (%d) for %s: %s via %s",
+                    fast_fails, url, _format_error(exc), proxy,
+                )
+            else:
+                # Timeout or non-proxy failure – count toward max_retries.
+                timeout_fails += 1
+                logger.warning(
+                    "Browser attempt %d/%d failed for %s via %s: %s",
+                    timeout_fails, max_retries, url, proxy or "direct",
+                    _format_error(exc),
+                )
+                if timeout_fails < max_retries:
+                    await asyncio.sleep(random.uniform(0.5, 2.0))
+
+    total = timeout_fails + fast_fails
 
     # --- Direct-connection fallback ---
     # When a proxy pool was used but every proxied attempt failed, try
@@ -745,18 +799,30 @@ async def fetch_with_browser(
     if proxy_pool is not None and direct_fallback:
         try:
             logger.info("Trying direct browser connection for %s", url)
-            return await _browser_fetch_once(
+            result = await _browser_fetch_once(
                 url,
                 proxy=None,
                 timeout=timeout,
                 extra_headers=extra_headers,
             )
+            logger.info(
+                "Browser fetch OK for %s (HTTP %d) via direct",
+                url, result.get("status", 0),
+            )
+            return result
         except Exception as exc:
+            last_error = exc
             logger.warning(
                 "Direct browser fallback failed for %s: %s",
                 url, _format_error(exc),
             )
 
+    # If every proxy returned a retryable status code (e.g. 403), return
+    # the last such response rather than raising ConnectionError.  The
+    # monitor layer can still inspect the status and act accordingly.
+    if last_result is not None and last_error is None:
+        return last_result
+
     raise ConnectionError(
-        f"All {attempts} browser attempts failed for {url}"
-    )
+        f"All {total} browser attempts failed for {url}"
+    ) from last_error

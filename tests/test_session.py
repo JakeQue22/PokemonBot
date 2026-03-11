@@ -971,6 +971,7 @@ class TestPlaywrightSupport:
                 "https://example.com",
                 proxy_pool=pool,
                 max_retries=3,
+                retry_on_status=frozenset({403}),
             )
             assert result["status"] == 200
             assert call_count == 2
@@ -1060,3 +1061,130 @@ class TestPlaywrightSupport:
                 )
             # Only 1 proxied attempt, no direct fallback
             assert mock_once.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_fast_fail_budget(self):
+        """Fast proxy failures (non-timeout) should not count toward max_retries."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [Proxy(protocol="http", host=f"10.0.0.{i}", port=8080) for i in range(5)]
+        pool = ProxyPool(proxies, shuffle=False)
+
+        call_count = 0
+
+        async def mock_once(url, *, proxy=None, timeout=30.0, extra_headers=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                # Fast failures (SOCKS/CONNECT) – should not exhaust max_retries
+                raise ConnectionError("net::ERR_PROXY_CONNECTION_FAILED")
+            return {"status": 200, "body": "OK", "headers": {}, "url": url}
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            side_effect=mock_once,
+        ):
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=2,  # Only 2 timeout retries allowed
+            )
+            # Should succeed because fast failures don't count
+            assert result["status"] == 200
+            assert call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_timeout_exhausts_budget(self):
+        """Timeout errors should count toward max_retries and stop the loop."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [Proxy(protocol="http", host=f"10.0.0.{i}", port=8080) for i in range(5)]
+        pool = ProxyPool(proxies, shuffle=False)
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Page.goto: Timeout 10000ms exceeded."),
+        ) as mock_once:
+            with pytest.raises(ConnectionError):
+                await fetch_with_browser(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    max_retries=2,
+                    direct_fallback=False,
+                )
+            # Only 2 attempts because timeouts count toward max_retries
+            assert mock_once.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_logs_success(self, caplog):
+        """fetch_with_browser() should log at INFO when a fetch succeeds."""
+        import logging
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        fake_response = {
+            "status": 200,
+            "body": "OK",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ):
+            with caplog.at_level(logging.INFO, logger="pokemonbot.session"):
+                result = await fetch_with_browser(
+                    "https://example.com",
+                    proxy_pool=pool,
+                )
+            assert result["status"] == 200
+            assert any(
+                "Browser fetch OK" in r.message and r.levelno == logging.INFO
+                for r in caplog.records
+            )
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_returns_last_retryable_result(self):
+        """When all proxies return a retryable status and no hard error, return the last result."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [Proxy(protocol="http", host=f"10.0.0.{i}", port=8080) for i in range(3)]
+        pool = ProxyPool(proxies, shuffle=False)
+
+        async def mock_once(url, *, proxy=None, timeout=30.0, extra_headers=None):
+            return {"status": 403, "body": "Forbidden", "headers": {}, "url": url}
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            side_effect=mock_once,
+        ):
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=3,
+                direct_fallback=False,
+                retry_on_status=frozenset({403}),
+            )
+            # Returns the last 403 response instead of raising ConnectionError
+            assert result["status"] == 403
