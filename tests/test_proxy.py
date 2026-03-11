@@ -7,8 +7,10 @@ from pokemonbot.proxy import (
     ProxyPool,
     ensure_proxy_file,
     load_proxies,
+    load_proxy_stats,
     parse_proxy,
     save_proxies,
+    save_proxy_stats,
 )
 
 
@@ -217,3 +219,107 @@ class TestEnsureProxyFile:
         assert result.is_file()
         assert result.parent == d  # file is INSIDE the directory
         assert result.name == "proxies.txt"
+
+
+class TestProxyStatsPeristence:
+    """Tests for saving / loading per-proxy stats to a JSON sidecar file."""
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        proxy_file = tmp_path / "proxies.txt"
+        proxy_file.write_text("")
+        stats = {
+            "http://1.1.1.1:8080": {"requests": 10, "failures": 2},
+            "socks5://2.2.2.2:1080": {"requests": 5, "failures": 0},
+        }
+        save_proxy_stats(stats, proxy_file)
+        loaded = load_proxy_stats(proxy_file)
+        assert loaded == stats
+
+    def test_load_returns_empty_when_no_file(self, tmp_path):
+        proxy_file = tmp_path / "proxies.txt"
+        proxy_file.write_text("")
+        loaded = load_proxy_stats(proxy_file)
+        assert loaded == {}
+
+    def test_load_returns_empty_on_corrupt_json(self, tmp_path):
+        proxy_file = tmp_path / "proxies.txt"
+        proxy_file.write_text("")
+        stats_file = tmp_path / "proxies.stats.json"
+        stats_file.write_text("{not valid json")
+        loaded = load_proxy_stats(proxy_file)
+        assert loaded == {}
+
+    def test_pool_auto_persists_on_mark_success(self, tmp_path):
+        proxy_file = tmp_path / "proxies.txt"
+        proxy_file.write_text("")
+        proxy = Proxy(protocol="http", host="1.1.1.1", port=8080)
+        pool = ProxyPool([proxy], shuffle=False)
+        pool.set_stats_path(proxy_file)
+        pool.next()
+        pool.mark_success(proxy)
+        loaded = load_proxy_stats(proxy_file)
+        assert "http://1.1.1.1:8080" in loaded
+        assert loaded["http://1.1.1.1:8080"]["requests"] == 1
+
+    def test_pool_auto_persists_on_mark_failed(self, tmp_path):
+        proxy_file = tmp_path / "proxies.txt"
+        proxy_file.write_text("")
+        proxy = Proxy(protocol="http", host="1.1.1.1", port=8080)
+        pool = ProxyPool([proxy], shuffle=False)
+        pool.set_stats_path(proxy_file)
+        pool.next()
+        pool.mark_failed(proxy)
+        loaded = load_proxy_stats(proxy_file)
+        assert loaded["http://1.1.1.1:8080"]["failures"] == 1
+
+
+class TestProxyPoolPersistedStats:
+    """Tests for restoring stats from a previous session and sorting by success rate."""
+
+    def test_restores_counters_from_persisted(self):
+        proxies = [
+            Proxy(protocol="http", host="1.1.1.1", port=8080),
+            Proxy(protocol="http", host="2.2.2.2", port=8080),
+        ]
+        persisted = {
+            "http://1.1.1.1:8080": {"requests": 10, "failures": 2},
+            "http://2.2.2.2:8080": {"requests": 5, "failures": 1},
+        }
+        pool = ProxyPool(proxies, shuffle=False, persisted_stats=persisted)
+        stats = {s["url"]: s for s in pool.stats()}
+        assert stats["http://1.1.1.1:8080"]["requests"] == 10
+        assert stats["http://1.1.1.1:8080"]["failures"] == 2
+        assert stats["http://2.2.2.2:8080"]["requests"] == 5
+        assert stats["http://2.2.2.2:8080"]["failures"] == 1
+
+    def test_sorts_by_success_rate(self):
+        proxies = [
+            Proxy(protocol="http", host="bad.proxy", port=8080),    # 50% success
+            Proxy(protocol="http", host="good.proxy", port=8080),   # 90% success
+            Proxy(protocol="http", host="new.proxy", port=8080),    # no stats
+        ]
+        persisted = {
+            "http://bad.proxy:8080": {"requests": 10, "failures": 5},
+            "http://good.proxy:8080": {"requests": 10, "failures": 1},
+        }
+        pool = ProxyPool(proxies, persisted_stats=persisted)
+        order = [p.host for p in pool.proxies]
+        # good.proxy (90% success) first, then bad.proxy (50%), then new (0%)
+        assert order[0] == "good.proxy"
+        assert order[1] == "bad.proxy"
+        assert order[2] == "new.proxy"
+
+    def test_shuffle_skipped_when_persisted_stats_provided(self):
+        """When persisted stats are present, shuffle is not applied."""
+        proxies = [
+            Proxy(protocol="http", host="a", port=1),
+            Proxy(protocol="http", host="b", port=1),
+        ]
+        persisted = {
+            "http://a:1": {"requests": 10, "failures": 0},
+            "http://b:1": {"requests": 10, "failures": 5},
+        }
+        # Even with shuffle=True (default), persisted_stats sorting takes precedence.
+        pool = ProxyPool(proxies, persisted_stats=persisted)
+        assert pool.proxies[0].host == "a"
+        assert pool.proxies[1].host == "b"

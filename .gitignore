@@ -19,3 +19,4 @@ htmlcov/
 .coverage
 config.yaml
 proxies.txt
+*.stats.json

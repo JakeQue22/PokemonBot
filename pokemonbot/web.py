@@ -25,6 +25,7 @@ from pokemonbot.proxy import (
     ensure_proxy_file,
     fetch_public_proxies,
     load_proxies,
+    load_proxy_stats,
     parse_proxy,
     save_proxies,
 )
@@ -131,7 +132,9 @@ async def _api_start(request: web.Request) -> web.Response:
     if proxy_path.is_file():
         proxies = load_proxies(proxy_path)
         if proxies:
-            proxy_pool = ProxyPool(proxies)
+            persisted = load_proxy_stats(proxy_path)
+            proxy_pool = ProxyPool(proxies, persisted_stats=persisted or None)
+            proxy_pool.set_stats_path(proxy_path)
         else:
             logger.warning("Proxy file %s contains no valid proxies – running without proxies", proxy_path)
 
@@ -444,9 +447,13 @@ async def _api_proxies_list(request: web.Request) -> web.Response:
     else:
         proxy_path = ensure_proxy_file(state.config.proxies.file)
         loaded = load_proxies(proxy_path) if proxy_path.is_file() else []
+        persisted = load_proxy_stats(proxy_path)
         data = [
             {"url": p.url, "protocol": p.protocol, "host": p.host, "port": p.port,
-             "requests": 0, "failures": 0, "successes": 0}
+             "requests": persisted.get(p.url, {}).get("requests", 0),
+             "failures": persisted.get(p.url, {}).get("failures", 0),
+             "successes": (persisted.get(p.url, {}).get("requests", 0)
+                           - persisted.get(p.url, {}).get("failures", 0))}
             for p in loaded
         ]
     return web.json_response({"proxies": data})

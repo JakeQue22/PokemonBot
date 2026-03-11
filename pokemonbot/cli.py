@@ -17,7 +17,7 @@ from pokemonbot import __version__
 from pokemonbot.config import AppConfig, MonitorConfig, NotifierConfig, ProxyConfig, load_config
 from pokemonbot.monitor import MONITOR_REGISTRY
 from pokemonbot.notifier import ConsoleNotifier, DiscordWebhookNotifier, EmailNotifier, NotifierPipeline
-from pokemonbot.proxy import ProxyPool, load_proxies
+from pokemonbot.proxy import ProxyPool, load_proxies, load_proxy_stats
 from pokemonbot.tasks import TaskManager
 
 console = Console()
@@ -61,7 +61,9 @@ def run(config_path: str, verbose: bool) -> None:
     if proxy_path.is_file():
         proxies = load_proxies(proxy_path)
         if proxies:
-            proxy_pool = ProxyPool(proxies)
+            persisted = load_proxy_stats(proxy_path)
+            proxy_pool = ProxyPool(proxies, persisted_stats=persisted or None)
+            proxy_pool.set_stats_path(proxy_path)
             logger.info("Loaded %d proxies from %s", proxy_pool.size, proxy_path)
     elif proxy_path.exists():
         logger.warning("Proxy path %s exists but is not a file – skipping.", proxy_path)

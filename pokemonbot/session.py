@@ -597,7 +597,7 @@ async def _browser_fetch_once(
         timeout_ms = int(timeout * 1000)
         response = await page.goto(
             url,
-            wait_until="domcontentloaded",
+            wait_until="commit",
             timeout=timeout_ms,
         )
 

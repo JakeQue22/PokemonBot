@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import random
 from dataclasses import dataclass
@@ -120,6 +121,55 @@ def save_proxies(proxies: list[Proxy], path: str | Path) -> None:
         dest.write_text(content)
 
 
+def _stats_path(proxy_path: str | Path) -> Path:
+    """Return the JSON stats file path derived from the proxy list path."""
+    p = Path(proxy_path)
+    return p.with_suffix(".stats.json")
+
+
+def save_proxy_stats(
+    stats: dict[str, dict[str, int]],
+    proxy_path: str | Path,
+) -> None:
+    """Persist per-proxy request/failure counters to a JSON sidecar file.
+
+    *stats* maps proxy URL → ``{"requests": int, "failures": int}``.
+    Uses atomic write to avoid partial-write corruption.
+    """
+    import os
+    import tempfile
+
+    dest = _stats_path(proxy_path)
+    content = json.dumps(stats, indent=2)
+
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir=str(dest.parent), prefix=".proxystats_", suffix=".tmp",
+        )
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(dest))
+    except OSError:
+        dest.write_text(content)
+
+
+def load_proxy_stats(proxy_path: str | Path) -> dict[str, dict[str, int]]:
+    """Load persisted proxy stats from the JSON sidecar file.
+
+    Returns an empty dict when the file does not exist or is invalid.
+    """
+    dest = _stats_path(proxy_path)
+    if not dest.is_file():
+        return {}
+    try:
+        return json.loads(dest.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not load proxy stats from %s: %s", dest, exc)
+        return {}
+
+
 def ensure_proxy_file(path: str | Path) -> Path:
     """Ensure *path* resolves to a regular file, creating it if necessary.
 
@@ -149,6 +199,11 @@ class ProxyPool:
 
     Failed proxies are placed on a cooldown so they are skipped by
     :meth:`next_available` for *cooldown_seconds* (default 120 s).
+
+    When *persisted_stats* is supplied (a dict mapping proxy URL to
+    ``{"requests": N, "failures": N}``), the pool restores counters
+    from the previous session and sorts proxies so that those with the
+    highest historical success rate are tried first.
     """
 
     def __init__(
@@ -157,12 +212,30 @@ class ProxyPool:
         *,
         shuffle: bool = True,
         cooldown_seconds: float = 120.0,
+        persisted_stats: dict[str, dict[str, int]] | None = None,
     ) -> None:
         if not proxies:
             raise ValueError("Proxy pool requires at least one proxy")
         pool = list(proxies)
-        if shuffle:
+
+        # ---- Restore persisted stats & order by success rate ----
+        if persisted_stats:
+            def _success_rate(p: Proxy) -> float:
+                s = persisted_stats.get(p.url)
+                if s is None or s.get("requests", 0) == 0:
+                    return 0.0  # unknown – sort after proven proxies
+                return (s["requests"] - s.get("failures", 0)) / s["requests"]
+
+            pool.sort(key=_success_rate, reverse=True)
+            logger.info(
+                "Proxy pool sorted by persisted success rate "
+                "(%d proxies, %d with stats)",
+                len(pool),
+                sum(1 for p in pool if p.url in persisted_stats),
+            )
+        elif shuffle:
             random.shuffle(pool)
+
         self._proxies = pool
         self._cycle: Iterator[Proxy] = itertools.cycle(self._proxies)
         self._failed: set[str] = set()
@@ -170,11 +243,22 @@ class ProxyPool:
         # Per-proxy counters keyed by proxy URL
         self._requests: dict[str, int] = {p.url: 0 for p in self._proxies}
         self._failures: dict[str, int] = {p.url: 0 for p in self._proxies}
+
+        # Seed counters from persisted stats.
+        if persisted_stats:
+            for p in self._proxies:
+                s = persisted_stats.get(p.url)
+                if s:
+                    self._requests[p.url] = s.get("requests", 0)
+                    self._failures[p.url] = s.get("failures", 0)
+
         # Timestamp of last failure per proxy URL (monotonic clock)
         self._fail_times: dict[str, float] = {}
         # Sticky proxy: last proxy that returned a successful response.
         # next_available() will try this proxy first before round-robin.
         self._preferred: Proxy | None = None
+        # Optional path for auto-persisting stats on mark_success / mark_failed.
+        self._stats_path: str | Path | None = None
 
     @property
     def size(self) -> int:
@@ -232,6 +316,7 @@ class ProxyPool:
         if self._preferred is not None and self._preferred.url == proxy.url:
             self._preferred = None
         logger.debug("Proxy marked as failed (cooldown %ds): %s", self._cooldown_seconds, proxy.url)
+        self._auto_persist()
 
     def mark_success(self, proxy: Proxy) -> None:
         """Record *proxy* as the preferred (sticky) proxy.
@@ -242,6 +327,30 @@ class ProxyPool:
         """
         self._preferred = proxy
         logger.debug("Proxy marked as preferred (sticky): %s", proxy.url)
+        self._auto_persist()
+
+    def set_stats_path(self, proxy_path: str | Path) -> None:
+        """Set the proxy file path so stats are auto-persisted on updates."""
+        self._stats_path = proxy_path
+
+    def persist_stats(self) -> None:
+        """Write current request/failure counters to the stats sidecar file."""
+        if self._stats_path is None:
+            return
+        data: dict[str, dict[str, int]] = {}
+        for p in self._proxies:
+            data[p.url] = {
+                "requests": self._requests.get(p.url, 0),
+                "failures": self._failures.get(p.url, 0),
+            }
+        try:
+            save_proxy_stats(data, self._stats_path)
+        except Exception as exc:
+            logger.debug("Failed to persist proxy stats: %s", exc)
+
+    def _auto_persist(self) -> None:
+        """Persist stats to disk if a stats path is configured."""
+        self.persist_stats()
 
     @property
     def failed_count(self) -> int:
