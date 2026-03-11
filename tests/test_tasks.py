@@ -380,13 +380,16 @@ class TestTaskManager:
         monitor = SmythsToysMonitor()
 
         with patch(
-            "pokemonbot.tasks.fetch",
+            "pokemonbot.tasks.fetch_with_browser",
             new_callable=AsyncMock,
             return_value=fake_response,
-        ) as mock_fetch:
+        ) as mock_browser_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            True,
+        ):
             await manager._check_once(state, monitor)
 
-        _, kwargs = mock_fetch.call_args
+        _, kwargs = mock_browser_fetch.call_args
         assert kwargs["direct_fallback"] is True
 
     @pytest.mark.asyncio
@@ -449,8 +452,53 @@ class TestTaskManager:
 
         monitor = SmythsToysMonitor()
 
-        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+        with patch(
+            "pokemonbot.tasks.fetch_with_browser",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ), patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            True,
+        ):
             with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
                 await manager._check_once(state, monitor)
 
         assert any("Out of stock" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_smythstoys_uses_browser_fetch(self):
+        """smythstoys monitors should use fetch_with_browser() when Playwright is available."""
+        monitor_cfg = MonitorConfig(
+            name="Smyths ETB",
+            url="https://www.smythstoys.com/uk/en-gb/p/255839",
+            site="smythstoys",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import SmythsToysMonitor
+
+        monitor = SmythsToysMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch_with_browser",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_browser_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            True,
+        ):
+            await manager._check_once(state, monitor)
+
+        mock_browser_fetch.assert_called_once()
+        args, kwargs = mock_browser_fetch.call_args
+        assert args[0] == monitor_cfg.url
+        assert kwargs["retry_on_status"] == frozenset({403})
