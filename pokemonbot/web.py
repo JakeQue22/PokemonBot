@@ -701,8 +701,10 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 .controls{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
 
 /* ---- Tables ---- */
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tbl{width:100%;border-collapse:collapse;font-size:.82rem}
-.tbl th,.tbl td{padding:.5rem .6rem;text-align:left;border-bottom:1px solid var(--border)}
+.tbl th,.tbl td{padding:.5rem .6rem;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.tbl td.wrap-cell{white-space:normal;word-break:break-all;min-width:120px}
 .tbl th{color:var(--muted);font-weight:500;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
 .tbl tr:hover td{background:var(--hover)}
 
@@ -749,6 +751,26 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
   .main{padding:.8rem}
   .stats{grid-template-columns:repeat(2,1fr)}
   .form-grid{grid-template-columns:1fr}
+  .header h1{font-size:1rem}
+  .tab-btn{padding:.45rem .7rem;font-size:.78rem}
+}
+@media(max-width:480px){
+  .sidebar{width:44px}.sidebar a{padding:.45rem .35rem;font-size:1.1rem}
+  .main{padding:.5rem}
+  .stats{grid-template-columns:1fr}
+  .header{padding:.6rem .8rem;gap:.5rem}
+  .header h1{font-size:.92rem}
+  .status-pill{padding:.2rem .5rem;font-size:.7rem}
+  .controls{gap:.4rem}
+  .btn{padding:.5rem .8rem;font-size:.78rem;min-height:40px}
+  .btn-sm{padding:.4rem .6rem;min-height:36px}
+  #log-box{height:260px;font-size:.7rem}
+  .tab-bar{overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
+  .tab-btn{white-space:nowrap;flex-shrink:0;padding:.4rem .6rem;font-size:.75rem}
+  .card{padding:.8rem}
+  .stat .num{font-size:1.3rem}
+  .tbl{font-size:.75rem}
+  .tbl th,.tbl td{padding:.35rem .4rem}
 }
 </style>
 </head>
@@ -797,10 +819,12 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <!-- Quick monitor table -->
       <div class="card" id="dash-tasks-card" style="display:none">
         <h2>Active Monitors</h2>
+        <div class="tbl-wrap">
         <table class="tbl">
           <thead><tr><th>Name</th><th>URL</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th></tr></thead>
           <tbody id="dash-tasks-body"></tbody>
         </table>
+        </div>
       </div>
 
       <!-- Recent logs -->
@@ -836,10 +860,12 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <!-- Monitor table -->
       <div class="card">
         <h2>Configured Monitors</h2>
+        <div class="tbl-wrap">
         <table class="tbl" id="monitors-table">
           <thead><tr><th>Name</th><th>URL</th><th>Site</th><th>Keywords</th><th>Interval</th><th>Enabled</th><th>Checks</th><th>Successes</th><th>Alerts</th><th>Errors</th><th>Status</th><th style="width:120px"></th></tr></thead>
           <tbody id="monitors-body"></tbody>
         </table>
+        </div>
         <div id="monitors-empty" style="text-align:center;padding:2rem;color:var(--muted);font-size:.85rem">No monitors configured.</div>
       </div>
 
@@ -942,10 +968,12 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <button class="btn btn-outline" onclick="refreshProxies()">🔄 Refresh</button>
           </div>
 
+          <div class="tbl-wrap">
           <table class="tbl" id="proxy-table">
             <thead><tr><th>#</th><th>Protocol</th><th>Host</th><th>Port</th><th>Requests</th><th>Successes</th><th>Failures</th><th></th></tr></thead>
             <tbody id="proxy-body"></tbody>
           </table>
+          </div>
           <div id="proxy-empty" style="text-align:center;padding:1.5rem;color:var(--muted);font-size:.85rem">No proxies configured. Click <b>Fetch Public Proxies</b> to get started.</div>
 
           <h3>Add Proxy</h3>

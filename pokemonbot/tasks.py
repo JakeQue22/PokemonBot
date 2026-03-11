@@ -31,10 +31,9 @@ _SITE_RETRY_STATUSES: dict[str, frozenset[int]] = {
 # challenge cookies.  curl/aiohttp cannot handle these.
 _BROWSER_SITES: frozenset[str] = frozenset({"pokemoncenter"})
 
-# Sites that MUST always go through a proxy – the direct-connection
-# fallback is disabled for these so the real IP is never exposed.
-# Other sites are allowed to fall back to a direct connection when
-# all proxy attempts fail.
+# Historical reference: pokemoncenter was the first site to require
+# proxy-only access.  As of now, ALL sites have direct_fallback=False
+# (see _check_once below) so the real IP is never exposed for any site.
 _PROXY_REQUIRED_SITES: frozenset[str] = frozenset({"pokemoncenter"})
 
 

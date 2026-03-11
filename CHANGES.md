@@ -62,6 +62,20 @@
 ### Log colouring (`web.py`)
 - `logClass()` JavaScript function matches `OK` and `check #N OK` patterns and applies the `log-success` CSS class (green `#2ecc71`)
 
+### Mobile-responsive dashboard (`web.py`)
+- Added `.tbl-wrap` class with `overflow-x:auto` – tables scroll horizontally on small screens instead of overflowing
+- Wrapped all three data tables (dashboard monitors, configured monitors, proxy list) in `.tbl-wrap` containers
+- Added `white-space:nowrap` on table cells to prevent layout breakage, with `.wrap-cell` opt-in for long content
+- Added 480px media query for small phones:
+  - Stats grid collapses to single column
+  - Sidebar narrows to 44px
+  - Buttons get larger touch targets (min-height 40px)
+  - Log box height reduced to 260px
+  - Tab bar scrolls horizontally with `overflow-x:auto`
+  - Table font size reduced to fit more content
+- Improved 768px breakpoint: header title shrinks, tab buttons reduce padding
+- All tables, forms, cards, and controls work on screens as narrow as 320px
+
 ## Parsing Methods
 
 ### Pokemon Center (`PokemonCenterMonitor`)
@@ -110,3 +124,4 @@ TaskManager._check_once()
 4. **Proxies not sticky** – Added `mark_success()` to `ProxyPool`. Working proxies are reused until they fail.
 5. **Smyths going through browser unnecessarily** – `_BROWSER_SITES` only includes `pokemoncenter`. Smyths uses HTTP fetch.
 6. **Logs showing "no change" instead of stock status** – Fixed by adding `describe_status()` method to monitors.
+7. **Dashboard not mobile-friendly** – Tables overflowed, forms didn't stack, no small-screen breakpoints. Added scroll wrappers, 480px media query, and better touch targets.
