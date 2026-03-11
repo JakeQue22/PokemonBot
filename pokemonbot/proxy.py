@@ -345,7 +345,7 @@ class ProxyPool:
             }
         try:
             save_proxy_stats(data, self._stats_path)
-        except Exception as exc:
+        except OSError as exc:
             logger.debug("Failed to persist proxy stats: %s", exc)
 
     def _auto_persist(self) -> None:

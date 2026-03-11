@@ -62,7 +62,7 @@ def run(config_path: str, verbose: bool) -> None:
         proxies = load_proxies(proxy_path)
         if proxies:
             persisted = load_proxy_stats(proxy_path)
-            proxy_pool = ProxyPool(proxies, persisted_stats=persisted or None)
+            proxy_pool = ProxyPool(proxies, persisted_stats=persisted)
             proxy_pool.set_stats_path(proxy_path)
             logger.info("Loaded %d proxies from %s", proxy_pool.size, proxy_path)
     elif proxy_path.exists():

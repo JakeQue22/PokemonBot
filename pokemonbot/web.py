@@ -133,7 +133,7 @@ async def _api_start(request: web.Request) -> web.Response:
         proxies = load_proxies(proxy_path)
         if proxies:
             persisted = load_proxy_stats(proxy_path)
-            proxy_pool = ProxyPool(proxies, persisted_stats=persisted or None)
+            proxy_pool = ProxyPool(proxies, persisted_stats=persisted)
             proxy_pool.set_stats_path(proxy_path)
         else:
             logger.warning("Proxy file %s contains no valid proxies – running without proxies", proxy_path)
