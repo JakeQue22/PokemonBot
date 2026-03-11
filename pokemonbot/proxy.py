@@ -214,6 +214,7 @@ class ProxyPool:
         for _ in range(len(self._proxies)):
             proxy = next(self._cycle)
             purl = proxy.url
+            # A proxy not in _fail_times was never failed – always available.
             if purl not in self._fail_times or now - self._fail_times[purl] >= self._cooldown_seconds:
                 self._requests[purl] = self._requests.get(purl, 0) + 1
                 return proxy
