@@ -119,10 +119,9 @@ class TaskManager:
         )
         retry_on_status = _SITE_RETRY_STATUSES.get(state.config.site)
 
-        # Sites in _PROXY_REQUIRED_SITES must never fall back to a direct
-        # connection so the real IP stays hidden.  Other sites are allowed
-        # to fall through when all proxies fail.
-        direct_fallback = state.config.site not in _PROXY_REQUIRED_SITES
+        # NEVER fall back to a direct (no-proxy) connection.  All traffic
+        # must go through the proxy pool so the real IP is never exposed.
+        direct_fallback = False
 
         try:
             if use_browser:

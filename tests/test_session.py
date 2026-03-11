@@ -437,6 +437,53 @@ class TestFetchDirectFallback:
             assert proxy_args[-1] is None
 
 
+class TestFetchStickyProxy:
+    """Tests that a successful proxy is reused (sticky) on subsequent calls."""
+
+    @pytest.mark.asyncio
+    async def test_successful_proxy_marked_as_preferred(self):
+        """After a successful proxied fetch, mark_success() is called on the pool."""
+        from pokemonbot.session import fetch
+        from pokemonbot.proxy import ProxyPool
+
+        proxies = [
+            Proxy(protocol="http", host=f"10.0.0.{i}", port=8080)
+            for i in range(3)
+        ]
+        pool = ProxyPool(proxies, shuffle=False)
+
+        fake_response = {
+            "status": 200,
+            "body": "<html>OK</html>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        async def mock_fetch(url, *, proxy=None, **kwargs):
+            return fake_response
+
+        with patch(
+            "pokemonbot.session._fetch_with_curl_cffi",
+            side_effect=mock_fetch,
+        ), patch(
+            "pokemonbot.session._fetch_with_aiohttp",
+            side_effect=mock_fetch,
+        ):
+            result = await fetch(
+                "https://example.com",
+                proxy_pool=pool,
+                timeout=30.0,
+                max_retries=3,
+                direct_fallback=False,
+            )
+            assert result["status"] == 200
+            # The preferred proxy should be set
+            assert pool._preferred is not None
+            # Second fetch should return the same preferred proxy
+            used_proxy = pool.next_available()
+            assert used_proxy == pool._preferred
+
+
 class TestFetchFastSkip:
     """Tests for the fast-skip optimisation: non-timeout proxy failures
     do NOT count toward max_retries, letting the bot try many more proxies.

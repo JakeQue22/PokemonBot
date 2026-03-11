@@ -411,6 +411,10 @@ async def fetch(
                 last_result = result
                 continue
 
+            # Mark the proxy as preferred (sticky) so it is reused
+            # on subsequent requests until it fails.
+            if proxy is not None and proxy_pool is not None:
+                proxy_pool.mark_success(proxy)
             return result
         except Exception as exc:
             last_error = exc
@@ -725,6 +729,10 @@ async def fetch_with_browser(
                 )
                 continue
 
+            # Mark the proxy as preferred (sticky) so it is reused
+            # on subsequent requests until it fails.
+            if proxy is not None and proxy_pool is not None:
+                proxy_pool.mark_success(proxy)
             return result
         except Exception as exc:
             if proxy is not None and proxy_pool is not None:

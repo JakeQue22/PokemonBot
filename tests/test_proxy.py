@@ -110,6 +110,46 @@ class TestProxyPool:
         stats = pool.stats()
         assert stats[0]["requests"] == 3
 
+    def test_mark_success_sticky(self):
+        """After mark_success(), next_available() returns the preferred proxy."""
+        proxies = self._make_proxies(3)
+        pool = ProxyPool(proxies, shuffle=False)
+        # Without sticky, first call returns proxies[0]
+        first = pool.next_available()
+        assert first == proxies[0]
+        # Mark proxies[2] as preferred
+        pool.mark_success(proxies[2])
+        # Now next_available() should return proxies[2] (the preferred)
+        preferred = pool.next_available()
+        assert preferred == proxies[2]
+        # Calling again still returns the preferred
+        preferred2 = pool.next_available()
+        assert preferred2 == proxies[2]
+
+    def test_mark_success_cleared_on_failure(self):
+        """When the preferred proxy fails, next_available() falls back to round-robin."""
+        proxies = self._make_proxies(3)
+        pool = ProxyPool(proxies, shuffle=False)
+        pool.mark_success(proxies[1])
+        assert pool.next_available() == proxies[1]
+        # Now mark that proxy as failed
+        pool.mark_failed(proxies[1])
+        # Preferred was cleared, should get round-robin
+        result = pool.next_available()
+        assert result != proxies[1]
+
+    def test_mark_success_skipped_when_on_cooldown(self):
+        """Preferred proxy on cooldown is skipped; round-robin takes over."""
+        proxies = self._make_proxies(3)
+        pool = ProxyPool(proxies, shuffle=False, cooldown_seconds=9999)
+        pool.mark_success(proxies[0])
+        # Put preferred on cooldown
+        pool.mark_failed(proxies[0])
+        # Preferred is cleared and on cooldown, should get round-robin
+        result = pool.next_available()
+        assert result is not None
+        assert result != proxies[0]
+
 
 class TestLoadProxies:
     def test_load_from_file(self, tmp_path):

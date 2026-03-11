@@ -357,8 +357,8 @@ class TestTaskManager:
         assert kwargs["retry_on_status"] is None
 
     @pytest.mark.asyncio
-    async def test_smythstoys_allows_direct_fallback(self):
-        """Smyths monitors should pass direct_fallback=True so they work without proxies."""
+    async def test_smythstoys_disables_direct_fallback(self):
+        """Smyths monitors must never use direct fallback – all traffic through proxies."""
         monitor_cfg = MonitorConfig(
             name="Smyths Test",
             url="https://www.smythstoys.com/uk/en-gb/p/255839",
@@ -387,7 +387,7 @@ class TestTaskManager:
             await manager._check_once(state, monitor)
 
         _, kwargs = mock_fetch.call_args
-        assert kwargs["direct_fallback"] is True
+        assert kwargs["direct_fallback"] is False
 
     @pytest.mark.asyncio
     async def test_pokemoncenter_disables_direct_fallback(self):

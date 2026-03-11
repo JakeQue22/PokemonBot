@@ -172,6 +172,9 @@ class ProxyPool:
         self._failures: dict[str, int] = {p.url: 0 for p in self._proxies}
         # Timestamp of last failure per proxy URL (monotonic clock)
         self._fail_times: dict[str, float] = {}
+        # Sticky proxy: last proxy that returned a successful response.
+        # next_available() will try this proxy first before round-robin.
+        self._preferred: Proxy | None = None
 
     @property
     def size(self) -> int:
@@ -190,17 +193,29 @@ class ProxyPool:
     def next_available(self) -> Proxy | None:
         """Return the next proxy that is **not** on cooldown.
 
-        Scans up to ``len(pool)`` candidates.  Returns ``None`` when every
-        proxy is currently on cooldown.
+        If a *preferred* (sticky) proxy has been set via :meth:`mark_success`
+        and it is not on cooldown, it is returned first.  This keeps traffic
+        flowing through a known-good proxy until it fails.
+
+        Otherwise scans up to ``len(pool)`` candidates via round-robin.
+        Returns ``None`` when every proxy is currently on cooldown.
         """
         import time
 
         now = time.monotonic()
+
+        # Try the sticky / preferred proxy first.
+        if self._preferred is not None:
+            purl = self._preferred.url
+            if purl not in self._fail_times or now - self._fail_times[purl] >= self._cooldown_seconds:
+                self._requests[purl] = self._requests.get(purl, 0) + 1
+                return self._preferred
+
         for _ in range(len(self._proxies)):
             proxy = next(self._cycle)
-            fail_time = self._fail_times.get(proxy.url, 0.0)
-            if now - fail_time >= self._cooldown_seconds:
-                self._requests[proxy.url] = self._requests.get(proxy.url, 0) + 1
+            purl = proxy.url
+            if purl not in self._fail_times or now - self._fail_times[purl] >= self._cooldown_seconds:
+                self._requests[purl] = self._requests.get(purl, 0) + 1
                 return proxy
         return None
 
@@ -211,7 +226,21 @@ class ProxyPool:
         self._failed.add(proxy.url)
         self._failures[proxy.url] = self._failures.get(proxy.url, 0) + 1
         self._fail_times[proxy.url] = time.monotonic()
+        # If the preferred proxy just failed, clear it so
+        # next_available() falls back to round-robin.
+        if self._preferred is not None and self._preferred.url == proxy.url:
+            self._preferred = None
         logger.debug("Proxy marked as failed (cooldown %ds): %s", self._cooldown_seconds, proxy.url)
+
+    def mark_success(self, proxy: Proxy) -> None:
+        """Record *proxy* as the preferred (sticky) proxy.
+
+        Subsequent calls to :meth:`next_available` will return this proxy
+        first, as long as it is not on cooldown.  This keeps traffic
+        flowing through a known-good proxy until it fails.
+        """
+        self._preferred = proxy
+        logger.debug("Proxy marked as preferred (sticky): %s", proxy.url)
 
     @property
     def failed_count(self) -> int:
