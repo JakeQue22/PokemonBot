@@ -662,6 +662,7 @@ async def fetch_with_browser(
     proxy_timeout: float | None = None,
     extra_headers: dict[str, str] | None = None,
     max_retries: int = 3,
+    direct_fallback: bool = True,
 ) -> dict[str, Any]:
     """Fetch *url* using a real Chromium browser via Playwright.
 
@@ -671,6 +672,11 @@ async def fetch_with_browser(
     When *proxy_pool* is provided, each attempt routes through a
     different proxy.  Proxies that return 403 or fail are marked as
     failed and the next proxy is tried.
+
+    When *direct_fallback* is ``True`` (the default) and a proxy pool
+    is configured but every proxied attempt fails, one final attempt is
+    made without a proxy.  Set to ``False`` for sites where the real IP
+    must never be exposed (e.g. pokemoncenter).
 
     Returns a dict with ``status``, ``body``, ``headers``, and ``url``
     matching the format used by :func:`fetch`.
@@ -730,6 +736,26 @@ async def fetch_with_browser(
             )
             if attempts < max_retries:
                 await asyncio.sleep(random.uniform(0.5, 2.0))
+
+    # --- Direct-connection fallback ---
+    # When a proxy pool was used but every proxied attempt failed, try
+    # one final browser fetch without a proxy.  This mirrors the
+    # direct_fallback behaviour in fetch() and keeps monitors alive
+    # when all public proxies are dead.
+    if proxy_pool is not None and direct_fallback:
+        try:
+            logger.info("Trying direct browser connection for %s", url)
+            return await _browser_fetch_once(
+                url,
+                proxy=None,
+                timeout=timeout,
+                extra_headers=extra_headers,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Direct browser fallback failed for %s: %s",
+                url, _format_error(exc),
+            )
 
     raise ConnectionError(
         f"All {attempts} browser attempts failed for {url}"

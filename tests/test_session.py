@@ -998,3 +998,65 @@ class TestPlaywrightSupport:
                     proxy_pool=pool,
                     max_retries=2,
                 )
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_direct_fallback(self):
+        """When all proxy attempts fail and direct_fallback=True, try without proxy."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        call_count = 0
+
+        async def mock_once(url, *, proxy=None, timeout=30.0, extra_headers=None):
+            nonlocal call_count
+            call_count += 1
+            if proxy is not None:
+                raise ConnectionError("proxy error")
+            return {"status": 200, "body": "OK", "headers": {}, "url": url}
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            side_effect=mock_once,
+        ):
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=1,
+                direct_fallback=True,
+            )
+            assert result["status"] == 200
+            # 1 proxied attempt + 1 direct fallback
+            assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_browser_no_direct_fallback(self):
+        """When direct_fallback=False, do not try direct connection after proxy failures."""
+        from pokemonbot.session import fetch_with_browser
+        from pokemonbot.proxy import ProxyPool
+
+        proxy = Proxy(protocol="http", host="1.2.3.4", port=8080)
+        pool = ProxyPool([proxy])
+
+        with patch(
+            "pokemonbot.session._HAS_PLAYWRIGHT",
+            True,
+        ), patch(
+            "pokemonbot.session._browser_fetch_once",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("proxy error"),
+        ) as mock_once:
+            with pytest.raises(ConnectionError):
+                await fetch_with_browser(
+                    "https://example.com",
+                    proxy_pool=pool,
+                    max_retries=1,
+                    direct_fallback=False,
+                )
+            # Only 1 proxied attempt, no direct fallback
+            assert mock_once.call_count == 1

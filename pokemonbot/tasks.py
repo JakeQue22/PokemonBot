@@ -133,6 +133,7 @@ class TaskManager:
                     proxy_timeout=self.app_config.proxies.timeout,
                     extra_headers=state.config.headers or None,
                     max_retries=self.app_config.max_retries,
+                    direct_fallback=direct_fallback,
                 )
             else:
                 response = await fetch(

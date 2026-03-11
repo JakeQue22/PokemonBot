@@ -283,6 +283,8 @@ class TestTaskManager:
         assert args[0] == monitor_cfg.url
         # Verify proxy_pool is passed to browser fetch
         assert "proxy_pool" in kwargs
+        # pokemoncenter must disable direct_fallback to hide real IP
+        assert kwargs["direct_fallback"] is False
 
     @pytest.mark.asyncio
     async def test_pokemoncenter_falls_back_without_playwright(self):
