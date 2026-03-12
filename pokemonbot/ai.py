@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 _XAI_API_URL = "https://api.x.ai/v1/chat/completions"
 
 # Model to use for analysis.
-_XAI_MODEL = "grok-2-latest"
+_XAI_MODEL = "grok-3"
 
 # Maximum characters of page body to send to the API to keep token
 # usage reasonable.  ~12 000 chars ≈ ~3 000 tokens.
