@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+import json
 import logging
 import re
 from typing import Any
@@ -49,6 +50,12 @@ class PokemonCenterMonitor(BaseMonitor):
         re.compile(r'add[\s_-]?to[\s_-]?cart', re.IGNORECASE),
         re.compile(r'addToCart', re.IGNORECASE),
         re.compile(r'add[\s_-]?to[\s_-]?basket', re.IGNORECASE),
+        # Modern React / Next.js e-commerce attributes
+        re.compile(r'data-testid="[^"]*add[_-]?to[_-]?(?:cart|basket)[^"]*"', re.IGNORECASE),
+        re.compile(r'"purchasable"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"buyable"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"isAvailable"\s*:\s*true', re.IGNORECASE),
     ]
     _OUT_OF_STOCK_PATTERNS = [
         re.compile(r'"availability"\s*:\s*"OutOfStock"', re.IGNORECASE),
@@ -56,7 +63,16 @@ class PokemonCenterMonitor(BaseMonitor):
         re.compile(r'sold\s*out', re.IGNORECASE),
         re.compile(r'out\s*of\s*stock', re.IGNORECASE),
         re.compile(r'currently\s*unavailable', re.IGNORECASE),
+        re.compile(r'"purchasable"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"buyable"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"isAvailable"\s*:\s*false', re.IGNORECASE),
     ]
+    # Regex to extract __NEXT_DATA__ JSON from Next.js pages.
+    _NEXT_DATA_RE = re.compile(
+        r'<script\s+id="__NEXT_DATA__"\s+type="application/json">\s*(\{.*?\})\s*</script>',
+        re.DOTALL,
+    )
     _QUEUE_PATTERNS = [
         re.compile(r'queue-it', re.IGNORECASE),
         re.compile(r'waiting\s*room', re.IGNORECASE),
@@ -75,6 +91,12 @@ class PokemonCenterMonitor(BaseMonitor):
         for pat in self._QUEUE_PATTERNS:
             if pat.search(body):
                 return "Queue active"
+        # Check __NEXT_DATA__ for availability before regex patterns.
+        next_status = self._check_next_data(body)
+        if next_status == "in_stock":
+            return "In stock"
+        if next_status == "out_of_stock":
+            return "Out of stock"
         for pat in self._ADD_TO_CART_PATTERNS:
             if pat.search(body):
                 return "In stock"
@@ -110,7 +132,21 @@ class PokemonCenterMonitor(BaseMonitor):
                     price=self._extract_price(body),
                 )
 
-        # Detect in-stock
+        # Check __NEXT_DATA__ JSON for product availability (Next.js sites).
+        next_status = self._check_next_data(body)
+        if next_status == "in_stock":
+            return Alert(
+                product_name=self._extract_title(body) or url,
+                url=url,
+                status="in_stock",
+                site=self.site_name,
+                price=self._extract_price(body),
+            )
+        if next_status == "out_of_stock":
+            logger.debug("Product is out of stock (__NEXT_DATA__) at %s", url)
+            return None
+
+        # Detect in-stock via regex patterns.
         for pat in self._ADD_TO_CART_PATTERNS:
             if pat.search(body):
                 return Alert(
@@ -138,6 +174,82 @@ class PokemonCenterMonitor(BaseMonitor):
     def _extract_price(self, body: str) -> str:
         m = self._PRICE_PATTERN.search(body)
         return f"${m.group(1)}" if m else ""
+
+    def _check_next_data(self, body: str) -> str | None:
+        """Extract availability from a ``__NEXT_DATA__`` JSON blob.
+
+        Next.js server-side renders the page props into a
+        ``<script id="__NEXT_DATA__">`` tag.  The product availability
+        may be buried in this JSON long before React hydration renders
+        any visible buttons.
+
+        Returns ``"in_stock"``, ``"out_of_stock"``, or ``None`` when
+        the JSON is absent or contains no recognisable availability data.
+        """
+        m = self._NEXT_DATA_RE.search(body)
+        if not m:
+            return None
+        try:
+            data = json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        flat = self._flatten_json(data)
+
+        # Known availability field values across e-commerce Next.js sites.
+        _IN_STOCK_VALUES = frozenset({
+            "instock", "in_stock", "in stock", "available",
+            "https://schema.org/instock",
+        })
+        _OUT_OF_STOCK_VALUES = frozenset({
+            "outofstock", "out_of_stock", "out of stock",
+            "unavailable", "sold out", "soldout",
+            "https://schema.org/outofstock",
+        })
+        _AVAILABILITY_KEYS = frozenset({
+            "availability", "stockstatus", "stock_status",
+        })
+        _BOOLEAN_STOCK_KEYS = frozenset({
+            "purchasable", "buyable", "instock", "in_stock",
+            "isavailable", "is_available", "isinstock", "is_in_stock",
+            "isaddtocartallowed",
+        })
+
+        for key, val in flat:
+            key_lower = key.lower().rsplit(".", 1)[-1]  # last segment
+
+            # String-valued availability fields.
+            if key_lower in _AVAILABILITY_KEYS and isinstance(val, str):
+                val_lower = val.lower()
+                if val_lower in _IN_STOCK_VALUES:
+                    return "in_stock"
+                if val_lower in _OUT_OF_STOCK_VALUES:
+                    return "out_of_stock"
+
+            # Boolean-valued stock flags.
+            if key_lower in _BOOLEAN_STOCK_KEYS and isinstance(val, bool):
+                return "in_stock" if val else "out_of_stock"
+
+        return None
+
+    @staticmethod
+    def _flatten_json(
+        obj: Any, prefix: str = "", _out: list | None = None,
+    ) -> list[tuple[str, Any]]:
+        """Recursively flatten a JSON object into ``(dotted_key, value)`` pairs."""
+        if _out is None:
+            _out = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                new_key = f"{prefix}.{k}" if prefix else k
+                PokemonCenterMonitor._flatten_json(v, new_key, _out)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                new_key = f"{prefix}[{i}]"
+                PokemonCenterMonitor._flatten_json(v, new_key, _out)
+        else:
+            _out.append((prefix, obj))
+        return _out
 
 
 class GenericMonitor(BaseMonitor):

@@ -170,6 +170,15 @@ class TaskManager:
                     "Monitor [%s] check #%d OK (HTTP %d) – %s",
                     state.config.name, state.checks, status_code, status_desc,
                 )
+                # Log a body snippet when stock data is missing to aid
+                # debugging of detection failures.
+                if status_desc == "No stock data found":
+                    body = response.get("body", "")
+                    snippet = body[:500].replace("\n", " ").strip()
+                    logger.debug(
+                        "Monitor [%s] page body snippet (first 500 chars): %s",
+                        state.config.name, snippet,
+                    )
             else:
                 logger.debug(
                     "Monitor [%s] check #%d (HTTP %d) – %s",

@@ -163,6 +163,173 @@ class TestPokemonCenterMonitor:
         resp = self._make_response("<p>Nothing</p>")
         assert m.describe_status(resp, url="https://example.com") == "No stock data found"
 
+    # -- __NEXT_DATA__ extraction tests ----------------------------------------
+
+    def test_next_data_in_stock_availability(self):
+        """Detect in-stock from __NEXT_DATA__ availability field."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"availability":"InStock"}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_next_data_out_of_stock_availability(self):
+        """Detect out-of-stock from __NEXT_DATA__ availability field."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"availability":"OutOfStock"}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is None
+
+    def test_next_data_schema_org_url(self):
+        """Detect in-stock from __NEXT_DATA__ with full schema.org URL."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"availability":"https://schema.org/InStock"}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_next_data_purchasable_true(self):
+        """Detect in-stock from __NEXT_DATA__ purchasable boolean."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"name":"Test","purchasable":true}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_next_data_purchasable_false(self):
+        """Detect out-of-stock from __NEXT_DATA__ purchasable=false."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"name":"Test","purchasable":false}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is None
+
+    def test_next_data_instock_boolean(self):
+        """Detect in-stock from __NEXT_DATA__ inStock boolean."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"inStock":true}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_next_data_describe_status_in_stock(self):
+        """describe_status detects in-stock from __NEXT_DATA__."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"availability":"InStock"}}}}'
+            '</script>'
+        )
+        resp = self._make_response(body)
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
+    def test_next_data_describe_status_out_of_stock(self):
+        """describe_status detects out-of-stock from __NEXT_DATA__."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"availability":"OutOfStock"}}}}'
+            '</script>'
+        )
+        resp = self._make_response(body)
+        assert m.describe_status(resp, url="https://example.com") == "Out of stock"
+
+    def test_next_data_invalid_json_ignored(self):
+        """Invalid JSON in __NEXT_DATA__ is safely ignored."""
+        m = PokemonCenterMonitor()
+        body = '<script id="__NEXT_DATA__" type="application/json">{broken json</script>'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is None
+
+    def test_next_data_no_availability(self):
+        """__NEXT_DATA__ without availability fields returns None."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"product":{"name":"Test"}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is None
+
+    def test_next_data_deeply_nested(self):
+        """__NEXT_DATA__ availability deeply nested still detected."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            '{"props":{"pageProps":{"data":{"products":[{"variants":[{"availability":"InStock"}]}]}}}}'
+            '</script>'
+        )
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    # -- Additional pattern tests -----------------------------------------------
+
+    def test_detect_data_testid_add_to_cart(self):
+        """Detect in-stock from data-testid attribute."""
+        m = PokemonCenterMonitor()
+        body = '<button data-testid="add-to-cart-button">Buy</button>'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_detect_purchasable_true(self):
+        """Detect in-stock from purchasable JSON field."""
+        m = PokemonCenterMonitor()
+        body = '{"product": {"purchasable": true}}'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_detect_in_stock_boolean(self):
+        """Detect in-stock from inStock JSON field."""
+        m = PokemonCenterMonitor()
+        body = '{"product": {"inStock": true}}'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_detect_purchasable_false_out_of_stock(self):
+        """Detect out-of-stock from purchasable=false JSON field."""
+        m = PokemonCenterMonitor()
+        body = '{"product": {"purchasable": false}}'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is None
+
+    def test_describe_status_purchasable_true(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response('{"purchasable": true}')
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
+    def test_describe_status_in_stock_boolean(self):
+        m = PokemonCenterMonitor()
+        resp = self._make_response('{"inStock": true}')
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
 
 class TestGenericMonitor:
     def _make_response(self, body: str, status: int = 200) -> dict:

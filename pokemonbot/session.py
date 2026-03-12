@@ -696,7 +696,12 @@ async def _browser_fetch_once(
                         || /sold.out/i.test(text)
                         || /out.of.stock/i.test(text)
                         || /currently.unavailable/i.test(text)
-                        || /"availability"\s*:/i.test(html);
+                        || /"availability"\s*:/i.test(html)
+                        || /"purchasable"\s*:/i.test(html)
+                        || /"buyable"\s*:/i.test(html)
+                        || /"inStock"\s*:/i.test(html)
+                        || /"isAvailable"\s*:/i.test(html)
+                        || document.querySelector('script#__NEXT_DATA__') !== null;
                 }""",
                 timeout=8_000,
             )
