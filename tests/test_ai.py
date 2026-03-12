@@ -153,3 +153,15 @@ class TestAnalysePage:
         assert "... [truncated]" in user_msg
         assert len(user_msg) < 20_000
 
+    @pytest.mark.asyncio
+    async def test_uses_grok3_model(self):
+        """Ensure the API request uses the grok-3 model."""
+        captured: dict = {}
+        resp = _FakeResponse(200, {"choices": [{"message": {"content": "UNKNOWN\nNo data."}}]})
+        session = _FakeSession(resp, capture=captured)
+
+        with patch("pokemonbot.ai.aiohttp.ClientSession", return_value=session):
+            await analyse_page("xai-test-key", "<html></html>", "https://example.com")
+
+        assert captured["model"] == "grok-3"
+
