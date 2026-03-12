@@ -676,6 +676,37 @@ async def _browser_fetch_once(
         except Exception as exc:
             logger.debug("Network idle wait failed for %s: %s", url, _format_error(exc))
 
+        # -----------------------------------------------------------------
+        # Wait for JS-rendered product content
+        # -----------------------------------------------------------------
+        # Many e-commerce sites (PokemonCenter, etc.) use React / Next.js
+        # where the initial HTML is a thin shell and product details
+        # (including "Add to Basket" / "Add to Cart" buttons) render
+        # after JavaScript hydration.  Poll briefly for stock-related
+        # content to appear in the page before capturing its HTML.
+        # If the content is already present the call returns immediately;
+        # if it never appears the timeout fires and we proceed with
+        # whatever the page currently contains.
+        try:
+            await page.wait_for_function(
+                r"""() => {
+                    const text = (document.body && document.body.innerText) || '';
+                    const html = (document.body && document.body.innerHTML) || '';
+                    return /add.to.(cart|basket)/i.test(text)
+                        || /sold.out/i.test(text)
+                        || /out.of.stock/i.test(text)
+                        || /currently.unavailable/i.test(text)
+                        || /"availability"\s*:/i.test(html);
+                }""",
+                timeout=8_000,
+            )
+        except Exception:
+            logger.debug(
+                "Product content wait timed out for %s – "
+                "page may lack stock data or JS has not rendered",
+                url,
+            )
+
         body = await page.content()
         status = response.status if response else 0
         resp_headers = await response.all_headers() if response else {}
