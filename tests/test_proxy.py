@@ -277,6 +277,7 @@ class TestProxyPoolPersistedStats:
     """Tests for restoring stats from a previous session and sorting by success rate."""
 
     def test_restores_counters_from_persisted(self):
+        """Persisted stats are used for sort order, but counters start fresh."""
         proxies = [
             Proxy(protocol="http", host="1.1.1.1", port=8080),
             Proxy(protocol="http", host="2.2.2.2", port=8080),
@@ -287,10 +288,12 @@ class TestProxyPoolPersistedStats:
         }
         pool = ProxyPool(proxies, shuffle=False, persisted_stats=persisted)
         stats = {s["url"]: s for s in pool.stats()}
-        assert stats["http://1.1.1.1:8080"]["requests"] == 10
-        assert stats["http://1.1.1.1:8080"]["failures"] == 2
-        assert stats["http://2.2.2.2:8080"]["requests"] == 5
-        assert stats["http://2.2.2.2:8080"]["failures"] == 1
+        # Counters start fresh each session so the dashboard shows
+        # current-session stats rather than historical accumulations.
+        assert stats["http://1.1.1.1:8080"]["requests"] == 0
+        assert stats["http://1.1.1.1:8080"]["failures"] == 0
+        assert stats["http://2.2.2.2:8080"]["requests"] == 0
+        assert stats["http://2.2.2.2:8080"]["failures"] == 0
 
     def test_sorts_by_success_rate(self):
         proxies = [

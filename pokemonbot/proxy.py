@@ -240,17 +240,12 @@ class ProxyPool:
         self._cycle: Iterator[Proxy] = itertools.cycle(self._proxies)
         self._failed: set[str] = set()
         self._cooldown_seconds = cooldown_seconds
-        # Per-proxy counters keyed by proxy URL
+        # Per-proxy counters keyed by proxy URL.
+        # Always start fresh so the dashboard shows **current-session**
+        # stats only.  Historical data is still used above for sort order
+        # so proven-good proxies are tried first.
         self._requests: dict[str, int] = {p.url: 0 for p in self._proxies}
         self._failures: dict[str, int] = {p.url: 0 for p in self._proxies}
-
-        # Seed counters from persisted stats.
-        if persisted_stats:
-            for p in self._proxies:
-                s = persisted_stats.get(p.url)
-                if s:
-                    self._requests[p.url] = s.get("requests", 0)
-                    self._failures[p.url] = s.get("failures", 0)
 
         # Timestamp of last failure per proxy URL (monotonic clock)
         self._fail_times: dict[str, float] = {}

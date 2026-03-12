@@ -130,6 +130,40 @@ _STATUS_REASONS: dict[int, str] = {
 }
 
 
+def _is_challenge_page(body: str) -> bool:
+    """Return ``True`` if *body* looks like a bot-protection challenge page.
+
+    Akamai Bot Manager, PerimeterX, and similar WAFs sometimes respond
+    with HTTP 200 but serve a JavaScript challenge page instead of real
+    content.  Treating these as successful responses inflates the
+    dashboard "Successes" counter and prevents the retry loop from trying
+    another proxy.
+    """
+    if not body:
+        return False
+
+    lower = body.lower()
+
+    # Akamai Bot Manager challenge markers
+    _CHALLENGE_MARKERS = (
+        "access denied",
+        "reference&#32;&#35;",  # Akamai "Reference #<number>"
+        "px-captcha",  # PerimeterX
+        "please enable cookies",
+        "managed by akamai",
+        "/_sec/cp_challenge/",  # Akamai challenge path
+        "challenge-platform",
+        "just a moment",  # Cloudflare "Just a moment..."
+        "checking your browser",
+    )
+
+    for marker in _CHALLENGE_MARKERS:
+        if marker in lower:
+            return True
+
+    return False
+
+
 def _random_user_agent(user_agents: list[str]) -> str:
     return random.choice(user_agents) if user_agents else ""
 
@@ -597,7 +631,7 @@ async def _browser_fetch_once(
         timeout_ms = int(timeout * 1000)
         response = await page.goto(
             url,
-            wait_until="load",
+            wait_until="domcontentloaded",
             timeout=timeout_ms,
         )
 
@@ -726,6 +760,20 @@ async def fetch_with_browser(
                     "Browser proxy skip (%d/%d) for %s: 403 %s via %s",
                     attempts, max_retries, url,
                     _STATUS_REASONS.get(403, ""), proxy,
+                )
+                continue
+
+            # Detect challenge/bot-protection pages that return HTTP 200
+            # but contain no real content.  Without this check these
+            # inflate the dashboard "Successes" counter and hide the
+            # fact that the proxy did not actually reach real content.
+            resp_body = result.get("body", "")
+            if _is_challenge_page(resp_body) and proxy is not None and proxy_pool is not None:
+                proxy_pool.mark_failed(proxy)
+                logger.warning(
+                    "Browser proxy skip (%d/%d) for %s: "
+                    "challenge/bot page (HTTP %d) via %s",
+                    attempts, max_retries, url, resp_status, proxy,
                 )
                 continue
 

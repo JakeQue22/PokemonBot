@@ -1107,3 +1107,104 @@ class TestPlaywrightSupport:
                 )
             # Only 1 proxied attempt, no direct fallback
             assert mock_once.call_count == 1
+
+
+class TestIsChallengePageDetection:
+    """Tests for the _is_challenge_page() helper function."""
+
+    def test_empty_body_is_not_challenge(self):
+        from pokemonbot.session import _is_challenge_page
+
+        assert _is_challenge_page("") is False
+        assert _is_challenge_page(None) is False
+
+    def test_normal_body_not_challenge(self):
+        from pokemonbot.session import _is_challenge_page
+
+        assert _is_challenge_page("<html><body>Real content</body></html>") is False
+
+    def test_access_denied_detected(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = "<html><head><title>Access Denied</title></head><body></body></html>"
+        assert _is_challenge_page(body) is True
+
+    def test_akamai_reference_detected(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = "<html><body>Reference&#32;&#35;18.abcdef17 for support</body></html>"
+        assert _is_challenge_page(body) is True
+
+    def test_perimeterx_detected(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = '<html><body><div id="px-captcha"></div></body></html>'
+        assert _is_challenge_page(body) is True
+
+    def test_cloudflare_just_a_moment(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = "<html><body>Just a moment... checking your browser</body></html>"
+        assert _is_challenge_page(body) is True
+
+    def test_challenge_platform_detected(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = '<html><body><script src="/_sec/cp_challenge/"></script></body></html>'
+        assert _is_challenge_page(body) is True
+
+    def test_real_product_page_not_detected(self):
+        from pokemonbot.session import _is_challenge_page
+
+        body = (
+            '<html><body>'
+            '<h1>Destined Rivals Booster Pack</h1>'
+            '<span>"availability": "InStock"</span>'
+            '<button>Add to Cart</button>'
+            '</body></html>'
+        )
+        assert _is_challenge_page(body) is False
+
+    @pytest.mark.asyncio
+    async def test_challenge_page_retried_in_browser_fetch(self):
+        """Challenge pages (HTTP 200) should be retried with a new proxy."""
+        from pokemonbot.proxy import ProxyPool
+        from pokemonbot.session import fetch_with_browser
+
+        proxies = [
+            Proxy(protocol="http", host="1.1.1.1", port=8080),
+            Proxy(protocol="http", host="2.2.2.2", port=8080),
+        ]
+        pool = ProxyPool(proxies, shuffle=False, cooldown_seconds=120)
+
+        call_count = 0
+
+        async def mock_once(url, *, proxy=None, timeout=30.0, extra_headers=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "status": 200,
+                    "body": "<html><head><title>Access Denied</title></head></html>",
+                    "headers": {},
+                    "url": url,
+                }
+            return {
+                "status": 200,
+                "body": "<html><body><h1>Real Product Page</h1></body></html>",
+                "headers": {},
+                "url": url,
+            }
+
+        with patch("pokemonbot.session._HAS_PLAYWRIGHT", True), patch(
+            "pokemonbot.session._browser_fetch_once",
+            side_effect=mock_once,
+        ):
+            result = await fetch_with_browser(
+                "https://example.com",
+                proxy_pool=pool,
+                max_retries=3,
+            )
+            assert result["status"] == 200
+            assert "Real Product Page" in result["body"]
+            assert call_count == 2
