@@ -29,6 +29,38 @@ class TestPokemonCenterMonitor:
         assert alert is not None
         assert alert.status == "in_stock"
 
+    def test_detect_add_to_basket(self):
+        """UK Pokemon Center uses 'ADD TO BASKET' instead of 'ADD TO CART'."""
+        m = PokemonCenterMonitor()
+        body = '<button class="add-to-basket">Add to Basket</button>'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_detect_add_to_basket_uppercase(self):
+        """UK Pokemon Center button text is often uppercase 'ADD TO BASKET'."""
+        m = PokemonCenterMonitor()
+        body = '<button>ADD TO BASKET</button>'
+        alert = m.parse(self._make_response(body), url="https://example.com", keywords=[])
+        assert alert is not None
+        assert alert.status == "in_stock"
+
+    def test_describe_status_add_to_basket(self):
+        """describe_status should return 'In stock' for pages with 'add to basket'."""
+        m = PokemonCenterMonitor()
+        resp = self._make_response('<button class="add-to-basket">Add to Basket</button>')
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
+    def test_describe_status_in_stock_takes_priority_over_out_of_stock(self):
+        """When both in-stock and out-of-stock indicators are present, in-stock wins."""
+        m = PokemonCenterMonitor()
+        body = (
+            '<div class="product">Add to Basket</div>'
+            '<div class="other-product">Sold Out</div>'
+        )
+        resp = self._make_response(body)
+        assert m.describe_status(resp, url="https://example.com") == "In stock"
+
     def test_detect_out_of_stock(self):
         m = PokemonCenterMonitor()
         body = '<span class="stock-label">Sold Out</span>'

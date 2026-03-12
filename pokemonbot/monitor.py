@@ -46,8 +46,9 @@ class PokemonCenterMonitor(BaseMonitor):
     _ADD_TO_CART_PATTERNS = [
         re.compile(r'"availability"\s*:\s*"InStock"', re.IGNORECASE),
         re.compile(r'"availability"\s*:\s*"https?://schema\.org/InStock"', re.IGNORECASE),
-        re.compile(r'add[_-]?to[_-]?cart', re.IGNORECASE),
+        re.compile(r'add[\s_-]?to[\s_-]?cart', re.IGNORECASE),
         re.compile(r'addToCart', re.IGNORECASE),
+        re.compile(r'add[\s_-]?to[\s_-]?basket', re.IGNORECASE),
     ]
     _OUT_OF_STOCK_PATTERNS = [
         re.compile(r'"availability"\s*:\s*"OutOfStock"', re.IGNORECASE),
@@ -74,12 +75,12 @@ class PokemonCenterMonitor(BaseMonitor):
         for pat in self._QUEUE_PATTERNS:
             if pat.search(body):
                 return "Queue active"
-        for pat in self._OUT_OF_STOCK_PATTERNS:
-            if pat.search(body):
-                return "Out of stock"
         for pat in self._ADD_TO_CART_PATTERNS:
             if pat.search(body):
                 return "In stock"
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                return "Out of stock"
         return "No stock data found"
 
     def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
