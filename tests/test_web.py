@@ -789,3 +789,36 @@ class TestDashboard:
             assert "new" in data
             assert "total" in data
             assert data["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_xai_api_key_in_general_settings(self, web_app):
+        """xai_api_key should be included in the general settings GET response."""
+        async with TestClient(TestServer(web_app)) as client:
+            resp = await client.get("/api/general-settings")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "xai_api_key" in data
+
+    @pytest.mark.asyncio
+    async def test_xai_api_key_roundtrip(self, web_app):
+        """xai_api_key should persist through a POST and be readable via GET."""
+        async with TestClient(TestServer(web_app)) as client:
+            resp = await client.post(
+                "/api/general-settings",
+                json={"xai_api_key": "xai-test-key-123"},
+            )
+            assert resp.status == 200
+
+            resp = await client.get("/api/general-settings")
+            data = await resp.json()
+            assert data["xai_api_key"] == "xai-test-key-123"
+
+    @pytest.mark.asyncio
+    async def test_xai_api_key_input_in_html(self, web_app):
+        """The dashboard HTML should contain the xAI API key input field."""
+        async with TestClient(TestServer(web_app)) as client:
+            resp = await client.get("/")
+            assert resp.status == 200
+            html = await resp.text()
+            assert "gen-xai-key" in html
+            assert "xAI API Key" in html

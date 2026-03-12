@@ -232,3 +232,34 @@ class TestSaveConfig:
         save_config(cfg, f)
         content = f.read_text()
         assert "direct_fallback" not in content
+
+    def test_xai_api_key_roundtrip(self, tmp_path):
+        """xai_api_key should persist and load correctly."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig(xai_api_key="xai-test-key-123")
+        save_config(cfg, f)
+        reloaded = load_config(f)
+        assert reloaded.xai_api_key == "xai-test-key-123"
+
+    def test_xai_api_key_not_written_when_empty(self, tmp_path):
+        """xai_api_key should not appear in the YAML when empty (default)."""
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        save_config(cfg, f)
+        content = f.read_text()
+        assert "xai_api_key" not in content
+
+    def test_xai_api_key_from_env_var(self, tmp_path):
+        """xai_api_key should support ${ENV_VAR} expansion."""
+        f = tmp_path / "config.yaml"
+        f.write_text('xai_api_key: "${XAI_KEY}"\nmonitors: []\n')
+        with patch.dict("os.environ", {"XAI_KEY": "xai-from-env"}):
+            cfg = load_config(f)
+        assert cfg.xai_api_key == "xai-from-env"
+
+    def test_xai_api_key_defaults_empty(self, tmp_path):
+        """When xai_api_key is not in config, it defaults to empty string."""
+        f = tmp_path / "config.yaml"
+        f.write_text("monitors: []\n")
+        cfg = load_config(f)
+        assert cfg.xai_api_key == ""

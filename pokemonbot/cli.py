@@ -144,6 +144,12 @@ email:
 concurrency: 10
 request_timeout: 30.0
 
+# xAI (Grok) API – AI-powered stock detection fallback
+# When regex pattern matching cannot determine stock status, the page
+# content is sent to xAI's Grok model for intelligent analysis.
+# Get your API key at https://console.x.ai/
+xai_api_key: ""                # e.g. "xai-..."
+
 # Monitor tasks – add as many as you like
 monitors:
   - name: "Pokemon Center - Elite Trainer Box"

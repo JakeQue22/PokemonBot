@@ -454,3 +454,156 @@ class TestTaskManager:
                 await manager._check_once(state, monitor)
 
         assert any("Out of stock" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_xai_fallback_in_stock(self):
+        """When pattern matching finds nothing but xAI returns in_stock, an alert is sent."""
+        monitor_cfg = MonitorConfig(
+            name="test-xai",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+
+        sent_alerts = []
+
+        class FakeNotifier:
+            async def send(self, alert):
+                sent_alerts.append(alert)
+
+        notifier = NotifierPipeline()
+        notifier._notifiers.append(FakeNotifier())  # type: ignore[arg-type]
+
+        manager = TaskManager(app_config=cfg, notifier=notifier)
+        state = TaskState(config=monitor_cfg)
+
+        # Response has no stock patterns – triggers "No stock data found"
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", new_callable=AsyncMock, return_value="in_stock"):
+                await manager._check_once(state, monitor)
+
+        assert state.alerts == 1
+        assert len(sent_alerts) == 1
+        assert sent_alerts[0].status == "in_stock"
+
+    @pytest.mark.asyncio
+    async def test_xai_fallback_out_of_stock(self, caplog):
+        """When xAI returns out_of_stock, no alert is sent but status is logged."""
+        monitor_cfg = MonitorConfig(
+            name="test-xai-oos",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", new_callable=AsyncMock, return_value="out_of_stock"):
+                with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                    await manager._check_once(state, monitor)
+
+        assert state.alerts == 0
+        assert any("Out of stock (xAI)" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_xai_not_called_without_api_key(self):
+        """When no xAI API key is configured, analyse_page should not be called."""
+        monitor_cfg = MonitorConfig(
+            name="test-no-xai",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="")
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        mock_analyse = AsyncMock(return_value=None)
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", mock_analyse):
+                await manager._check_once(state, monitor)
+
+        mock_analyse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_xai_not_called_when_patterns_match(self):
+        """When regex patterns find stock data, xAI should not be called."""
+        monitor_cfg = MonitorConfig(
+            name="test-patterns-match",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+
+        sent_alerts = []
+
+        class FakeNotifier:
+            async def send(self, alert):
+                sent_alerts.append(alert)
+
+        notifier = NotifierPipeline()
+        notifier._notifiers.append(FakeNotifier())  # type: ignore[arg-type]
+
+        manager = TaskManager(app_config=cfg, notifier=notifier)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<button>Add to Basket</button>',
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        mock_analyse = AsyncMock(return_value=None)
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", mock_analyse):
+                await manager._check_once(state, monitor)
+
+        # Pattern matching found the button, so xAI should NOT be called
+        mock_analyse.assert_not_called()
+        assert len(sent_alerts) == 1

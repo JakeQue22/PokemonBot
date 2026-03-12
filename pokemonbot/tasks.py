@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
+from pokemonbot.ai import analyse_page
 from pokemonbot.config import AppConfig, MonitorConfig
 from pokemonbot.monitor import get_monitor
 from pokemonbot.notifier import Alert, NotifierPipeline
@@ -168,26 +169,52 @@ class TaskManager:
             status_desc = monitor.describe_status(  # type: ignore[union-attr]
                 response, url=state.config.url,
             )
-            if 200 <= status_code < 400:
-                logger.info(
-                    "Monitor [%s] check #%d OK (HTTP %d) – %s",
-                    state.config.name, state.checks, status_code, status_desc,
+
+            # -----------------------------------------------------------------
+            # xAI fallback: when pattern matching finds nothing and an API
+            # key is configured, ask Grok to analyse the page content.
+            # -----------------------------------------------------------------
+            if (
+                status_desc == "No stock data found"
+                and 200 <= status_code < 400
+                and self.app_config.xai_api_key
+            ):
+                body = response.get("body", "")
+                ai_result = await analyse_page(
+                    self.app_config.xai_api_key, body, state.config.url,
                 )
-                # Log a body snippet when stock data is missing to aid
-                # debugging of detection failures.
-                if status_desc == "No stock data found":
-                    body = response.get("body", "")
-                    snippet = body[:_DEBUG_SNIPPET_LENGTH].replace("\n", " ").strip()
-                    logger.debug(
-                        "Monitor [%s] page body snippet (first %d chars): %s",
-                        state.config.name, _DEBUG_SNIPPET_LENGTH, snippet,
+                if ai_result == "in_stock":
+                    alert = Alert(
+                        product_name=state.config.name or state.config.url,
+                        url=state.config.url,
+                        status="in_stock",
+                        site=state.config.site,
                     )
-            else:
-                logger.debug(
-                    "Monitor [%s] check #%d (HTTP %d) – %s",
-                    state.config.name, state.checks, status_code, status_desc,
-                )
-            return
+                    status_desc = "In stock (xAI)"
+                elif ai_result == "out_of_stock":
+                    status_desc = "Out of stock (xAI)"
+
+            if alert is None:
+                if 200 <= status_code < 400:
+                    logger.info(
+                        "Monitor [%s] check #%d OK (HTTP %d) – %s",
+                        state.config.name, state.checks, status_code, status_desc,
+                    )
+                    # Log a body snippet when stock data is missing to aid
+                    # debugging of detection failures.
+                    if status_desc == "No stock data found":
+                        body = response.get("body", "")
+                        snippet = body[:_DEBUG_SNIPPET_LENGTH].replace("\n", " ").strip()
+                        logger.debug(
+                            "Monitor [%s] page body snippet (first %d chars): %s",
+                            state.config.name, _DEBUG_SNIPPET_LENGTH, snippet,
+                        )
+                else:
+                    logger.debug(
+                        "Monitor [%s] check #%d (HTTP %d) – %s",
+                        state.config.name, state.checks, status_code, status_desc,
+                    )
+                return
 
         # Only notify when status changes to avoid spam.
         if alert.status != state.last_status:

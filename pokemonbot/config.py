@@ -76,6 +76,7 @@ class AppConfig:
     max_retries: int = 3
     portal_name: str = "PokemonBot"
     base_url: str = ""
+    xai_api_key: str = ""
 
 
 _DEFAULT_USER_AGENTS: list[str] = [
@@ -150,6 +151,7 @@ def load_config(path: str | Path) -> AppConfig:
         max_retries=max_retries,
         portal_name=str(raw.get("portal_name", "PokemonBot")),
         base_url=str(raw.get("base_url", "")),
+        xai_api_key=str(raw.get("xai_api_key", "")),
     )
 
 
@@ -195,6 +197,8 @@ def _config_to_dict(cfg: AppConfig) -> dict[str, Any]:
         data["base_url"] = cfg.base_url
     if cfg.user_agents != _DEFAULT_USER_AGENTS:
         data["user_agents"] = cfg.user_agents
+    if cfg.xai_api_key:
+        data["xai_api_key"] = cfg.xai_api_key
 
     # Monitors
     monitors = []

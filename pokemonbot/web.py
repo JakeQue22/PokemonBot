@@ -543,6 +543,7 @@ async def _api_general_settings_get(request: web.Request) -> web.Response:
         "max_retries": state.config.max_retries,
         "base_url": state.config.base_url,
         "direct_fallback": state.config.proxies.direct_fallback,
+        "xai_api_key": state.config.xai_api_key,
     })
 
 
@@ -566,6 +567,8 @@ async def _api_general_settings_post(request: web.Request) -> web.Response:
         state.config.base_url = val
     if "direct_fallback" in body:
         state.config.proxies.direct_fallback = bool(body["direct_fallback"])
+    if "xai_api_key" in body:
+        state.config.xai_api_key = str(body["xai_api_key"]).strip()
     _save_state(state)
     return web.json_response({"status": "updated"})
 
@@ -946,10 +949,16 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
             <label>Max Retries per Request</label> <input id="gen-max-retries" type="number" value="10" min="1" step="1">
             <label>Direct Fallback</label> <div style="display:flex;align-items:center;gap:.5rem"><input id="gen-direct-fallback" type="checkbox" checked> <span style="cursor:pointer" onclick="document.getElementById('gen-direct-fallback').click()">Try direct (no-proxy) connection when all proxies fail</span></div>
             <label>Base URL (external SSL)</label> <input id="gen-base-url" placeholder="https://mybot.example.com">
+            <label>xAI API Key</label> <input id="gen-xai-key" type="password" placeholder="xai-...">
           </div>
           <p style="color:var(--text-muted);font-size:.85rem;margin:.4rem 0 0">
             Set the public base URL if you access this dashboard through a reverse proxy / external SSL.
             Leave empty for default. Example: <code>https://mybot.example.com</code>
+          </p>
+          <p style="color:var(--text-muted);font-size:.85rem;margin:.4rem 0 0">
+            The <b>xAI API Key</b> enables AI-powered stock detection as a fallback when regex
+            pattern matching finds no stock data. Get your key at
+            <a href="https://console.x.ai/" target="_blank" rel="noopener">console.x.ai</a>.
           </p>
           <div class="controls" style="margin-top:.8rem">
             <button class="btn btn-accent" onclick="saveGeneral()">💾 Save</button>
@@ -1334,6 +1343,7 @@ async function loadGeneral(){
     document.getElementById('gen-max-retries').value=d.max_retries||3;
     document.getElementById('gen-direct-fallback').checked=d.direct_fallback!==false;
     document.getElementById('gen-base-url').value=d.base_url||'';
+    document.getElementById('gen-xai-key').value=d.xai_api_key||'';
   }catch(e){}
 }
 async function saveGeneral(){
@@ -1343,7 +1353,8 @@ async function saveGeneral(){
     request_timeout:parseFloat(document.getElementById('gen-timeout').value)||30,
     max_retries:parseInt(document.getElementById('gen-max-retries').value)||3,
     direct_fallback:document.getElementById('gen-direct-fallback').checked,
-    base_url:document.getElementById('gen-base-url').value.trim()
+    base_url:document.getElementById('gen-base-url').value.trim(),
+    xai_api_key:document.getElementById('gen-xai-key').value.trim()
   };
   const r=await fetch(API+'/api/general-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(r.ok)toast('General settings saved. Reload the page to see changes.',true);else toast('Failed to save',false);

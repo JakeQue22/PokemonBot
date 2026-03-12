@@ -2,6 +2,12 @@ email:
   smtp_host: smtp.gmail.com
   smtp_port: 465
 max_retries: 5
+
+# xAI (Grok) API key – enables AI-powered stock detection as a fallback
+# when regex pattern matching finds no stock data on the page.
+# Get your API key at https://console.x.ai/
+# xai_api_key: "xai-..."
+
 monitors:
 - name: Pokemon Center - Elite Trainer Box
   url: https://www.pokemoncenter.com/en-gb/category/elite-trainer-box
