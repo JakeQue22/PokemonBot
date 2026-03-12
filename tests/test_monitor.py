@@ -321,11 +321,13 @@ class TestPokemonCenterMonitor:
         assert alert is None
 
     def test_describe_status_purchasable_true(self):
+        """describe_status detects in-stock from purchasable JSON field."""
         m = PokemonCenterMonitor()
         resp = self._make_response('{"purchasable": true}')
         assert m.describe_status(resp, url="https://example.com") == "In stock"
 
     def test_describe_status_in_stock_boolean(self):
+        """describe_status detects in-stock from inStock JSON field."""
         m = PokemonCenterMonitor()
         resp = self._make_response('{"inStock": true}')
         assert m.describe_status(resp, url="https://example.com") == "In stock"

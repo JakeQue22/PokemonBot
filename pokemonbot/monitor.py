@@ -69,8 +69,11 @@ class PokemonCenterMonitor(BaseMonitor):
         re.compile(r'"isAvailable"\s*:\s*false', re.IGNORECASE),
     ]
     # Regex to extract __NEXT_DATA__ JSON from Next.js pages.
+    # Match everything between the opening tag and closing </script>.
+    # The JSON is always the sole content of this script element and
+    # Next.js serialises it without raw ``</script>`` sequences.
     _NEXT_DATA_RE = re.compile(
-        r'<script\s+id="__NEXT_DATA__"\s+type="application/json">\s*(\{.*?\})\s*</script>',
+        r'<script\s+id="__NEXT_DATA__"\s+type="application/json">\s*(.*?)\s*</script>',
         re.DOTALL,
     )
     _QUEUE_PATTERNS = [
@@ -216,7 +219,10 @@ class PokemonCenterMonitor(BaseMonitor):
         })
 
         for key, val in flat:
-            key_lower = key.lower().rsplit(".", 1)[-1]  # last segment
+            # Use only the last dotted segment so that deeply nested fields
+            # (e.g. ``props.pageProps.product.availability``) are matched
+            # regardless of the exact nesting path.
+            key_lower = key.lower().rsplit(".", 1)[-1]
 
             # String-valued availability fields.
             if key_lower in _AVAILABILITY_KEYS and isinstance(val, str):

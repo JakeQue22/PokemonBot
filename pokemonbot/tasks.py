@@ -19,6 +19,9 @@ from pokemonbot.session import (
 
 logger = logging.getLogger(__name__)
 
+# Maximum characters of the page body to log when stock data is missing.
+_DEBUG_SNIPPET_LENGTH = 500
+
 # Sites protected by Akamai / Cloudflare may return 403 from one
 # proxy but succeed from another.  We retry on these status codes
 # for known bot-protected sites.
@@ -174,10 +177,10 @@ class TaskManager:
                 # debugging of detection failures.
                 if status_desc == "No stock data found":
                     body = response.get("body", "")
-                    snippet = body[:500].replace("\n", " ").strip()
+                    snippet = body[:_DEBUG_SNIPPET_LENGTH].replace("\n", " ").strip()
                     logger.debug(
-                        "Monitor [%s] page body snippet (first 500 chars): %s",
-                        state.config.name, snippet,
+                        "Monitor [%s] page body snippet (first %d chars): %s",
+                        state.config.name, _DEBUG_SNIPPET_LENGTH, snippet,
                     )
             else:
                 logger.debug(
