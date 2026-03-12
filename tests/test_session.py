@@ -1208,3 +1208,93 @@ class TestIsChallengePageDetection:
             assert result["status"] == 200
             assert "Real Product Page" in result["body"]
             assert call_count == 2
+
+
+class TestBrowserFetchProductContentWait:
+    """Tests for the JS product-content wait in _browser_fetch_once."""
+
+    @pytest.mark.asyncio
+    async def test_product_content_wait_called(self):
+        """_browser_fetch_once should call wait_for_function for product content."""
+        from pokemonbot.session import _browser_fetch_once
+
+        # Build lightweight mocks for a Playwright page & context.
+        page = AsyncMock()
+        page.url = "https://pokemoncenter.com/product/123"
+        page.content = AsyncMock(
+            return_value="<html><body><button>Add to Basket</button></body></html>"
+        )
+
+        response_mock = AsyncMock()
+        response_mock.status = 200
+        response_mock.all_headers = AsyncMock(return_value={})
+        page.goto = AsyncMock(return_value=response_mock)
+        page.query_selector = AsyncMock(return_value=None)
+        page.wait_for_load_state = AsyncMock()
+        page.wait_for_function = AsyncMock()
+        page.close = AsyncMock()
+
+        context = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_cookies = AsyncMock()
+        context.close = AsyncMock()
+
+        browser = AsyncMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.is_connected = lambda: True
+
+        with patch("pokemonbot.session._ensure_browser", return_value=browser):
+            result = await _browser_fetch_once(
+                "https://pokemoncenter.com/product/123",
+                timeout=10.0,
+            )
+
+        assert result["status"] == 200
+        # Verify wait_for_function was called (product content wait).
+        page.wait_for_function.assert_called_once()
+        call_args = page.wait_for_function.call_args
+        js_code = call_args[0][0]
+        # The JS should check for add-to-cart/basket patterns.
+        assert "add.to.(cart|basket)" in js_code
+        assert "sold.out" in js_code
+        assert "availability" in js_code
+
+    @pytest.mark.asyncio
+    async def test_product_content_wait_timeout_is_non_fatal(self):
+        """If wait_for_function times out, _browser_fetch_once should still return content."""
+        from pokemonbot.session import _browser_fetch_once
+
+        page = AsyncMock()
+        page.url = "https://pokemoncenter.com/product/123"
+        page.content = AsyncMock(
+            return_value="<html><body><p>No stock info at all</p></body></html>"
+        )
+
+        response_mock = AsyncMock()
+        response_mock.status = 200
+        response_mock.all_headers = AsyncMock(return_value={})
+        page.goto = AsyncMock(return_value=response_mock)
+        page.query_selector = AsyncMock(return_value=None)
+        page.wait_for_load_state = AsyncMock()
+        # Simulate the product content wait timing out.
+        page.wait_for_function = AsyncMock(side_effect=TimeoutError("timed out"))
+        page.close = AsyncMock()
+
+        context = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        context.add_cookies = AsyncMock()
+        context.close = AsyncMock()
+
+        browser = AsyncMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.is_connected = lambda: True
+
+        with patch("pokemonbot.session._ensure_browser", return_value=browser):
+            result = await _browser_fetch_once(
+                "https://pokemoncenter.com/product/123",
+                timeout=10.0,
+            )
+
+        # Should still return the page content, not crash.
+        assert result["status"] == 200
+        assert "No stock info at all" in result["body"]
