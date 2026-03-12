@@ -1,0 +1,9 @@
+services:
+  pokemonbot:
+    build: .
+    ports:
+      - "3005:3005"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./proxies.txt:/app/proxies.txt
+    restart: unless-stopped

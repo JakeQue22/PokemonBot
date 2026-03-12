@@ -1,0 +1,609 @@
+"""Tests for the task manager module."""
+
+import asyncio
+import logging
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from pokemonbot.config import AppConfig, MonitorConfig
+from pokemonbot.notifier import NotifierPipeline
+from pokemonbot.tasks import TaskManager, TaskState
+
+
+class TestTaskState:
+    def test_defaults(self):
+        cfg = MonitorConfig(name="test", url="https://example.com")
+        state = TaskState(config=cfg)
+        assert state.checks == 0
+        assert state.alerts == 0
+        assert state.errors == 0
+        assert state.successes == 0
+        assert state.last_status == ""
+
+
+class TestTaskManager:
+    def test_stop_event(self):
+        cfg = AppConfig()
+        manager = TaskManager(app_config=cfg)
+        assert not manager._stop_event.is_set()
+        manager.stop()
+        assert manager._stop_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_run_no_monitors(self):
+        """Should return immediately when no monitors are configured."""
+        cfg = AppConfig(monitors=[])
+        manager = TaskManager(app_config=cfg)
+        await manager.run()
+        assert manager.task_states == []
+
+    @pytest.mark.asyncio
+    async def test_check_once_success(self):
+        """Simulate a single check that finds a product in stock."""
+        monitor_cfg = MonitorConfig(
+            name="test",
+            url="https://example.com",
+            site="generic",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+
+        sent_alerts = []
+
+        class FakeNotifier:
+            async def send(self, alert):
+                sent_alerts.append(alert)
+
+        notifier = NotifierPipeline()
+        notifier._notifiers.append(FakeNotifier())  # type: ignore[arg-type]
+
+        manager = TaskManager(app_config=cfg, notifier=notifier)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<button>Add to Cart</button>',
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.alerts == 1
+        assert state.successes == 1
+        assert len(sent_alerts) == 1
+        assert sent_alerts[0].status == "in_stock"
+
+    @pytest.mark.asyncio
+    async def test_check_once_no_change(self):
+        """Simulate a check where status didn't change."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg, last_status="in_stock")
+
+        fake_response = {
+            "status": 200,
+            "body": '<button>Add to Cart</button>',
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            await manager._check_once(state, monitor)
+
+        # Checks incremented but no new alert (status unchanged)
+        assert state.checks == 1
+        assert state.alerts == 0
+
+    @pytest.mark.asyncio
+    async def test_check_once_connection_error(self):
+        """Simulate a connection failure."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("timeout"),
+        ):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.errors == 1
+
+    @pytest.mark.asyncio
+    async def test_check_once_logs_success_at_info(self, caplog):
+        """A successful check with no alert should log an INFO-level OK message."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing special</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                await manager._check_once(state, monitor)
+
+        assert any("OK" in r.message and r.levelno == logging.INFO for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_check_once_ok_increments_successes(self):
+        """A 200 response with no alert should increment successes."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing special</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.successes == 1
+        assert state.errors == 0
+
+    @pytest.mark.asyncio
+    async def test_check_once_error_does_not_increment_successes(self):
+        """A connection error should not increment successes."""
+        monitor_cfg = MonitorConfig(
+            name="test", url="https://example.com", site="generic"
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("timeout"),
+        ):
+            await manager._check_once(state, monitor)
+
+        assert state.checks == 1
+        assert state.successes == 0
+        assert state.errors == 1
+
+    @pytest.mark.asyncio
+    async def test_run_skips_disabled_monitors(self):
+        """Disabled monitors should not create tasks."""
+        enabled_cfg = MonitorConfig(
+            name="enabled", url="https://example.com", site="generic", enabled=True, interval=1.0
+        )
+        disabled_cfg = MonitorConfig(
+            name="disabled", url="https://example.com/off", site="generic", enabled=False, interval=1.0
+        )
+        cfg = AppConfig(monitors=[enabled_cfg, disabled_cfg])
+        manager = TaskManager(app_config=cfg)
+
+        # Start and immediately stop
+        manager.stop()
+        await manager.run()
+
+        # Only the enabled monitor should produce a task state
+        assert len(manager.task_states) == 1
+        assert manager.task_states[0].config.name == "enabled"
+
+    @pytest.mark.asyncio
+    async def test_run_all_disabled(self):
+        """When all monitors are disabled, run() returns immediately."""
+        cfg = AppConfig(monitors=[
+            MonitorConfig(name="a", url="https://example.com", enabled=False),
+            MonitorConfig(name="b", url="https://example.com", enabled=False),
+        ])
+        manager = TaskManager(app_config=cfg)
+        await manager.run()
+        assert manager.task_states == []
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_uses_browser_fetch(self):
+        """pokemoncenter monitors should use fetch_with_browser() when Playwright is available."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch_with_browser",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_browser_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            True,
+        ):
+            await manager._check_once(state, monitor)
+
+        mock_browser_fetch.assert_called_once()
+        args, kwargs = mock_browser_fetch.call_args
+        assert args[0] == monitor_cfg.url
+        # Verify proxy_pool is passed to browser fetch
+        assert "proxy_pool" in kwargs
+        # pokemoncenter must disable direct_fallback to hide real IP
+        assert kwargs["direct_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_falls_back_without_playwright(self):
+        """Without Playwright, pokemoncenter monitors fall back to curl/aiohttp fetch()."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            False,
+        ):
+            await manager._check_once(state, monitor)
+
+        mock_fetch.assert_called_once()
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["retry_on_status"] == frozenset({403})
+
+    @pytest.mark.asyncio
+    async def test_generic_site_no_retry_on_status(self):
+        """Generic monitors should not pass retry_on_status."""
+        monitor_cfg = MonitorConfig(
+            name="test",
+            url="https://example.com",
+            site="generic",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": "https://example.com",
+        }
+
+        from pokemonbot.monitor import GenericMonitor
+
+        monitor = GenericMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["retry_on_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_smythstoys_disables_direct_fallback(self):
+        """Smyths monitors must never use direct fallback – all traffic through proxies."""
+        monitor_cfg = MonitorConfig(
+            name="Smyths Test",
+            url="https://www.smythstoys.com/uk/en-gb/p/255839",
+            site="smythstoys",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<span>Out of Stock</span>',
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import SmythsToysMonitor
+
+        monitor = SmythsToysMonitor()
+
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch:
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["direct_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_pokemoncenter_disables_direct_fallback(self):
+        """Pokemon Center monitors must never use direct fallback."""
+        monitor_cfg = MonitorConfig(
+            name="PC ETB",
+            url="https://www.pokemoncenter.com/en-gb/category/elite-trainer-box",
+            site="pokemoncenter",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<p>Nothing</p>",
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        # When Playwright is NOT available, falls back to fetch() – check direct_fallback
+        with patch(
+            "pokemonbot.tasks.fetch",
+            new_callable=AsyncMock,
+            return_value=fake_response,
+        ) as mock_fetch, patch(
+            "pokemonbot.tasks._HAS_PLAYWRIGHT",
+            False,
+        ):
+            await manager._check_once(state, monitor)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["direct_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_once_logs_stock_status(self, caplog):
+        """A successful check should log the stock status from describe_status()."""
+        monitor_cfg = MonitorConfig(
+            name="Smyths Test",
+            url="https://www.smythstoys.com/uk/en-gb/p/255839",
+            site="smythstoys",
+        )
+        cfg = AppConfig(monitors=[monitor_cfg])
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<span class="availability">Out of Stock</span>',
+            "headers": {},
+            "url": monitor_cfg.url,
+        }
+
+        from pokemonbot.monitor import SmythsToysMonitor
+
+        monitor = SmythsToysMonitor()
+
+        with patch("pokemonbot.tasks.fetch", new_callable=AsyncMock, return_value=fake_response):
+            with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                await manager._check_once(state, monitor)
+
+        assert any("Out of stock" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_xai_fallback_in_stock(self):
+        """When pattern matching finds nothing but xAI returns in_stock, an alert is sent."""
+        monitor_cfg = MonitorConfig(
+            name="test-xai",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+
+        sent_alerts = []
+
+        class FakeNotifier:
+            async def send(self, alert):
+                sent_alerts.append(alert)
+
+        notifier = NotifierPipeline()
+        notifier._notifiers.append(FakeNotifier())  # type: ignore[arg-type]
+
+        manager = TaskManager(app_config=cfg, notifier=notifier)
+        state = TaskState(config=monitor_cfg)
+
+        # Response has no stock patterns – triggers "No stock data found"
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", new_callable=AsyncMock, return_value="in_stock"):
+                await manager._check_once(state, monitor)
+
+        assert state.alerts == 1
+        assert len(sent_alerts) == 1
+        assert sent_alerts[0].status == "in_stock"
+
+    @pytest.mark.asyncio
+    async def test_xai_fallback_out_of_stock(self, caplog):
+        """When xAI returns out_of_stock, no alert is sent but status is logged."""
+        monitor_cfg = MonitorConfig(
+            name="test-xai-oos",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", new_callable=AsyncMock, return_value="out_of_stock"):
+                with caplog.at_level(logging.INFO, logger="pokemonbot.tasks"):
+                    await manager._check_once(state, monitor)
+
+        assert state.alerts == 0
+        assert any("Out of stock (xAI)" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_xai_not_called_without_api_key(self):
+        """When no xAI API key is configured, analyse_page should not be called."""
+        monitor_cfg = MonitorConfig(
+            name="test-no-xai",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="")
+        manager = TaskManager(app_config=cfg)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": "<html><body>Some product page without patterns</body></html>",
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        mock_analyse = AsyncMock(return_value=None)
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", mock_analyse):
+                await manager._check_once(state, monitor)
+
+        mock_analyse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_xai_not_called_when_patterns_match(self):
+        """When regex patterns find stock data, xAI should not be called."""
+        monitor_cfg = MonitorConfig(
+            name="test-patterns-match",
+            url="https://example.com/product",
+            site="pokemoncenter",
+            keywords=[],
+            interval=1.0,
+        )
+        cfg = AppConfig(monitors=[monitor_cfg], xai_api_key="xai-test-key")
+
+        sent_alerts = []
+
+        class FakeNotifier:
+            async def send(self, alert):
+                sent_alerts.append(alert)
+
+        notifier = NotifierPipeline()
+        notifier._notifiers.append(FakeNotifier())  # type: ignore[arg-type]
+
+        manager = TaskManager(app_config=cfg, notifier=notifier)
+        state = TaskState(config=monitor_cfg)
+
+        fake_response = {
+            "status": 200,
+            "body": '<button>Add to Basket</button>',
+            "headers": {},
+            "url": "https://example.com/product",
+        }
+
+        from pokemonbot.monitor import PokemonCenterMonitor
+
+        monitor = PokemonCenterMonitor()
+
+        mock_analyse = AsyncMock(return_value=None)
+        with patch("pokemonbot.tasks.fetch_with_browser", new_callable=AsyncMock, return_value=fake_response):
+            with patch("pokemonbot.tasks.analyse_page", mock_analyse):
+                await manager._check_once(state, monitor)
+
+        # Pattern matching found the button, so xAI should NOT be called
+        mock_analyse.assert_not_called()
+        assert len(sent_alerts) == 1

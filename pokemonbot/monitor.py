@@ -1,0 +1,491 @@
+"""Product availability monitors for various sites."""
+
+from __future__ import annotations
+
+import abc
+import json
+import logging
+import re
+from typing import Any
+
+from pokemonbot.notifier import Alert
+
+logger = logging.getLogger(__name__)
+
+
+class BaseMonitor(abc.ABC):
+    """Abstract base class for site monitors."""
+
+    site_name: str = "generic"
+
+    @abc.abstractmethod
+    def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
+        """Parse an HTTP response and return an ``Alert`` if a notable state is detected."""
+
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        """Return a short human-readable stock status for logging.
+
+        Called when ``parse()`` returns ``None`` to give the user a
+        meaningful status line (e.g. *Out of stock*) instead of the
+        generic *no change*.
+        """
+        return "no change"
+
+    def _keyword_match(self, text: str, keywords: list[str]) -> bool:
+        if not keywords:
+            return True
+        lower = text.lower()
+        return any(kw.lower() in lower for kw in keywords)
+
+
+class PokemonCenterMonitor(BaseMonitor):
+    """Monitor for pokemoncenter.com product pages and listings."""
+
+    site_name = "pokemoncenter"
+
+    # Common indicators found in Pokemon Center product pages
+    _ADD_TO_CART_PATTERNS = [
+        re.compile(r'"availability"\s*:\s*"InStock"', re.IGNORECASE),
+        re.compile(r'"availability"\s*:\s*"https?://schema\.org/InStock"', re.IGNORECASE),
+        re.compile(r'add[\s_-]?to[\s_-]?cart', re.IGNORECASE),
+        re.compile(r'addToCart', re.IGNORECASE),
+        re.compile(r'add[\s_-]?to[\s_-]?basket', re.IGNORECASE),
+        # Modern React / Next.js e-commerce attributes
+        re.compile(r'data-testid="[^"]*add[_-]?to[_-]?(?:cart|basket)[^"]*"', re.IGNORECASE),
+        re.compile(r'"purchasable"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"buyable"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*true', re.IGNORECASE),
+        re.compile(r'"isAvailable"\s*:\s*true', re.IGNORECASE),
+    ]
+    _OUT_OF_STOCK_PATTERNS = [
+        re.compile(r'"availability"\s*:\s*"OutOfStock"', re.IGNORECASE),
+        re.compile(r'"availability"\s*:\s*"https?://schema\.org/OutOfStock"', re.IGNORECASE),
+        re.compile(r'sold\s*out', re.IGNORECASE),
+        re.compile(r'out\s*of\s*stock', re.IGNORECASE),
+        re.compile(r'currently\s*unavailable', re.IGNORECASE),
+        re.compile(r'"purchasable"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"buyable"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'"isAvailable"\s*:\s*false', re.IGNORECASE),
+    ]
+    # Regex to extract __NEXT_DATA__ JSON from Next.js pages.
+    # Match everything between the opening tag and closing </script>.
+    # The JSON is always the sole content of this script element and
+    # Next.js serialises it without raw ``</script>`` sequences.
+    _NEXT_DATA_RE = re.compile(
+        r'<script\s+id="__NEXT_DATA__"\s+type="application/json">\s*(.*?)\s*</script>',
+        re.DOTALL,
+    )
+    _QUEUE_PATTERNS = [
+        re.compile(r'queue-it', re.IGNORECASE),
+        re.compile(r'waiting\s*room', re.IGNORECASE),
+        re.compile(r'you\s*are\s*in\s*(?:the\s*)?queue', re.IGNORECASE),
+        re.compile(r'queue\.it', re.IGNORECASE),
+    ]
+    _PRICE_PATTERN = re.compile(r'"price"\s*:\s*"?([\d.]+)"?')
+
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+        if status_code == 403:
+            return "Access denied (bot protection)"
+        if status_code >= 500:
+            return f"Server error ({status_code})"
+        for pat in self._QUEUE_PATTERNS:
+            if pat.search(body):
+                return "Queue active"
+        # Check __NEXT_DATA__ for availability before regex patterns.
+        next_status = self._check_next_data(body)
+        if next_status == "in_stock":
+            return "In stock"
+        if next_status == "out_of_stock":
+            return "Out of stock"
+        for pat in self._ADD_TO_CART_PATTERNS:
+            if pat.search(body):
+                return "In stock"
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                return "Out of stock"
+        return "No stock data found"
+
+    def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+
+        if status_code == 403:
+            logger.warning("Access denied (403) for %s – possible bot protection", url)
+            return None
+
+        if status_code >= 500:
+            logger.warning("Server error (%d) for %s", status_code, url)
+            return None
+
+        if not self._keyword_match(body, keywords):
+            return None
+
+        # Detect queue page
+        for pat in self._QUEUE_PATTERNS:
+            if pat.search(body):
+                logger.info("Queue detected for %s", url)
+                return Alert(
+                    product_name=self._extract_title(body) or url,
+                    url=url,
+                    status="queue_active",
+                    site=self.site_name,
+                    price=self._extract_price(body),
+                )
+
+        # Check __NEXT_DATA__ JSON for product availability (Next.js sites).
+        next_status = self._check_next_data(body)
+        if next_status == "in_stock":
+            return Alert(
+                product_name=self._extract_title(body) or url,
+                url=url,
+                status="in_stock",
+                site=self.site_name,
+                price=self._extract_price(body),
+            )
+        if next_status == "out_of_stock":
+            logger.debug("Product is out of stock (__NEXT_DATA__) at %s", url)
+            return None
+
+        # Detect in-stock via regex patterns.
+        for pat in self._ADD_TO_CART_PATTERNS:
+            if pat.search(body):
+                return Alert(
+                    product_name=self._extract_title(body) or url,
+                    url=url,
+                    status="in_stock",
+                    site=self.site_name,
+                    price=self._extract_price(body),
+                )
+
+        # Detect out-of-stock (informational only)
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                logger.debug("Product is out of stock at %s", url)
+                return None
+
+        logger.debug("No definitive stock status found for %s", url)
+        return None
+
+    @staticmethod
+    def _extract_title(body: str) -> str:
+        m = re.search(r"<title>([^<]+)</title>", body, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    def _extract_price(self, body: str) -> str:
+        m = self._PRICE_PATTERN.search(body)
+        return f"${m.group(1)}" if m else ""
+
+    def _check_next_data(self, body: str) -> str | None:
+        """Extract availability from a ``__NEXT_DATA__`` JSON blob.
+
+        Next.js server-side renders the page props into a
+        ``<script id="__NEXT_DATA__">`` tag.  The product availability
+        may be buried in this JSON long before React hydration renders
+        any visible buttons.
+
+        Returns ``"in_stock"``, ``"out_of_stock"``, or ``None`` when
+        the JSON is absent or contains no recognisable availability data.
+        """
+        m = self._NEXT_DATA_RE.search(body)
+        if not m:
+            return None
+        try:
+            data = json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        flat = self._flatten_json(data)
+
+        # Known availability field values across e-commerce Next.js sites.
+        _IN_STOCK_VALUES = frozenset({
+            "instock", "in_stock", "in stock", "available",
+            "https://schema.org/instock",
+        })
+        _OUT_OF_STOCK_VALUES = frozenset({
+            "outofstock", "out_of_stock", "out of stock",
+            "unavailable", "sold out", "soldout",
+            "https://schema.org/outofstock",
+        })
+        _AVAILABILITY_KEYS = frozenset({
+            "availability", "stockstatus", "stock_status",
+        })
+        _BOOLEAN_STOCK_KEYS = frozenset({
+            "purchasable", "buyable", "instock", "in_stock",
+            "isavailable", "is_available", "isinstock", "is_in_stock",
+            "isaddtocartallowed",
+        })
+
+        for key, val in flat:
+            # Use only the last dotted segment so that deeply nested fields
+            # (e.g. ``props.pageProps.product.availability``) are matched
+            # regardless of the exact nesting path.
+            key_lower = key.lower().rsplit(".", 1)[-1]
+
+            # String-valued availability fields.
+            if key_lower in _AVAILABILITY_KEYS and isinstance(val, str):
+                val_lower = val.lower()
+                if val_lower in _IN_STOCK_VALUES:
+                    return "in_stock"
+                if val_lower in _OUT_OF_STOCK_VALUES:
+                    return "out_of_stock"
+
+            # Boolean-valued stock flags.
+            if key_lower in _BOOLEAN_STOCK_KEYS and isinstance(val, bool):
+                return "in_stock" if val else "out_of_stock"
+
+        return None
+
+    @staticmethod
+    def _flatten_json(
+        obj: Any, prefix: str = "", _out: list | None = None,
+    ) -> list[tuple[str, Any]]:
+        """Recursively flatten a JSON object into ``(dotted_key, value)`` pairs."""
+        if _out is None:
+            _out = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                new_key = f"{prefix}.{k}" if prefix else k
+                PokemonCenterMonitor._flatten_json(v, new_key, _out)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                new_key = f"{prefix}[{i}]"
+                PokemonCenterMonitor._flatten_json(v, new_key, _out)
+        else:
+            _out.append((prefix, obj))
+        return _out
+
+
+class GenericMonitor(BaseMonitor):
+    """Keyword-based monitor suitable for any website."""
+
+    site_name = "generic"
+
+    _STOCK_INDICATORS = [
+        re.compile(r'add[_\- ]?to[_\- ]?cart', re.IGNORECASE),
+        re.compile(r'"availability"\s*:\s*"[^"]*InStock"', re.IGNORECASE),
+        re.compile(r'in\s*stock', re.IGNORECASE),
+        re.compile(r'buy\s*now', re.IGNORECASE),
+    ]
+
+    def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+
+        if status_code >= 400:
+            logger.info("HTTP %d for %s", status_code, url)
+            return None
+
+        if not self._keyword_match(body, keywords):
+            return None
+
+        for pat in self._STOCK_INDICATORS:
+            if pat.search(body):
+                title = self._extract_title(body) or url
+                return Alert(
+                    product_name=title,
+                    url=url,
+                    status="in_stock",
+                    site=self.site_name,
+                )
+
+        return None
+
+    @staticmethod
+    def _extract_title(body: str) -> str:
+        m = re.search(r"<title>([^<]+)</title>", body, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+
+class SmythsToysMonitor(BaseMonitor):
+    """Monitor for smythstoys.com product and category pages.
+
+    Supports two URL patterns:
+    - **Product pages** (``/p/<id>``): checks for add-to-basket / in-stock
+      indicators and can filter store availability by keyword (e.g.
+      ``["Liverpool"]``).
+    - **Category pages** (``/c/<id>``): scans product listings and alerts
+      when any in-stock item matches the configured keywords (e.g.
+      ``["Trainer Box"]``).
+    """
+
+    site_name = "smythstoys"
+
+    _ADD_TO_BASKET_PATTERNS = [
+        re.compile(r'add[_\-\s]?to[_\-\s]?basket', re.IGNORECASE),
+        re.compile(r'addToBasket', re.IGNORECASE),
+        re.compile(r'"availability"\s*:\s*"[^"]*InStock"', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*true', re.IGNORECASE),
+    ]
+    _OUT_OF_STOCK_PATTERNS = [
+        re.compile(r'out[_\-\s]?of[_\-\s]?stock', re.IGNORECASE),
+        re.compile(r'currently[_\-\s]?unavailable', re.IGNORECASE),
+        re.compile(r'"availability"\s*:\s*"[^"]*OutOfStock"', re.IGNORECASE),
+        re.compile(r'"inStock"\s*:\s*false', re.IGNORECASE),
+        re.compile(r'sold\s*out', re.IGNORECASE),
+    ]
+    _PRICE_PATTERN = re.compile(r'"price"\s*:\s*"?([\d.]+)"?')
+
+    # Category page: individual product blocks.  SmythsToys wraps each item in
+    # an element whose class contains "product" – we capture the whole block up
+    # to the next similar element so we can inspect title + availability
+    # together.
+    _PRODUCT_BLOCK = re.compile(
+        r'<[^>]+class="[^"]*\bproduct[^"]*"[^>]*>.*?(?=<[^>]+class="[^"]*\bproduct[^"]*"|$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    _TITLE_IN_BLOCK = re.compile(r'<(?:a|h\d|span)[^>]*>([^<]{3,})</(?:a|h\d|span)>', re.IGNORECASE)
+    _LINK_IN_BLOCK = re.compile(r'href="([^"]*?/p/[^"]*)"', re.IGNORECASE)
+
+    # Store-stock JSON fragments (returned by SmythsToys stock-check XHR).
+    _STORE_ENTRY = re.compile(
+        r'\{[^}]*"(?:store[Nn]ame|displayName)"\s*:\s*"(?P<store>[^"]+)"[^}]*'
+        r'"(?:stock[Ll]evel(?:Status)?|availableStock)"\s*:\s*"?(?P<stock>[^",}]+)',
+        re.DOTALL,
+    )
+
+    def describe_status(self, response: dict[str, Any], *, url: str) -> str:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+        if status_code == 403:
+            return "Access denied (bot protection)"
+        if status_code >= 500:
+            return f"Server error ({status_code})"
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                return "Out of stock"
+        for pat in self._ADD_TO_BASKET_PATTERNS:
+            if pat.search(body):
+                return "In stock"
+        return "No stock data found"
+
+    def parse(self, response: dict[str, Any], *, url: str, keywords: list[str]) -> Alert | None:
+        body: str = response.get("body", "")
+        status_code: int = response.get("status", 0)
+
+        if status_code == 403:
+            logger.warning("Access denied (403) for %s – possible bot protection", url)
+            return None
+        if status_code >= 500:
+            logger.warning("Server error (%d) for %s", status_code, url)
+            return None
+
+        # Decide parsing strategy based on URL shape.
+        if "/c/" in url:
+            return self._parse_category(body, url=url, keywords=keywords)
+        return self._parse_product(body, url=url, keywords=keywords)
+
+    # -- Product page --------------------------------------------------------
+
+    def _parse_product(self, body: str, *, url: str, keywords: list[str]) -> Alert | None:
+        # If the response looks like a store-stock JSON payload, delegate.
+        store_alert = self._parse_store_stock(body, url=url, keywords=keywords)
+        if store_alert is not None:
+            return store_alert
+
+        if not self._keyword_match(body, keywords):
+            return None
+
+        for pat in self._ADD_TO_BASKET_PATTERNS:
+            if pat.search(body):
+                return Alert(
+                    product_name=self._extract_title(body) or url,
+                    url=url,
+                    status="in_stock",
+                    site=self.site_name,
+                    price=self._extract_price(body),
+                )
+
+        for pat in self._OUT_OF_STOCK_PATTERNS:
+            if pat.search(body):
+                logger.debug("Product out of stock at %s", url)
+                return None
+
+        logger.debug("No definitive stock status for %s", url)
+        return None
+
+    # -- Category page -------------------------------------------------------
+
+    def _parse_category(self, body: str, *, url: str, keywords: list[str]) -> Alert | None:
+        blocks = self._PRODUCT_BLOCK.findall(body)
+        if not blocks:
+            # Fallback: treat the whole page as a single product-like page.
+            return self._parse_product(body, url=url, keywords=keywords)
+
+        for block in blocks:
+            title_m = self._TITLE_IN_BLOCK.search(block)
+            title = title_m.group(1).strip() if title_m else ""
+            if not self._keyword_match(title, keywords):
+                continue
+
+            # Check if *this* block signals stock.
+            in_stock = any(pat.search(block) for pat in self._ADD_TO_BASKET_PATTERNS)
+            if not in_stock:
+                continue
+
+            link_m = self._LINK_IN_BLOCK.search(block)
+            product_url = link_m.group(1) if link_m else url
+            if product_url.startswith("/"):
+                # Make absolute using the base from the original URL.
+                from urllib.parse import urlparse
+                parts = urlparse(url)
+                product_url = f"{parts.scheme}://{parts.netloc}{product_url}"
+
+            return Alert(
+                product_name=title or url,
+                url=product_url,
+                status="in_stock",
+                site=self.site_name,
+                price=self._extract_price(block),
+            )
+
+        logger.debug("No in-stock keyword-matched items found on category page %s", url)
+        return None
+
+    # -- Store stock JSON ----------------------------------------------------
+
+    def _parse_store_stock(self, body: str, *, url: str, keywords: list[str]) -> Alert | None:
+        """Parse a store-stock JSON/HTML payload and filter by store name keywords."""
+        entries = self._STORE_ENTRY.findall(body)
+        if not entries:
+            return None  # not a store-stock response
+
+        for store_name, stock_level in entries:
+            if not self._keyword_match(store_name, keywords):
+                continue
+            stock_lower = stock_level.strip().lower()
+            if stock_lower in ("green", "instock", "available", "true") or (stock_lower.isdigit() and int(stock_lower) > 0):
+                return Alert(
+                    product_name=f"{self._extract_title(body) or url} @ {store_name}",
+                    url=url,
+                    status="in_stock",
+                    site=self.site_name,
+                )
+
+        logger.debug("No matching in-stock stores for %s", url)
+        return None
+
+    @staticmethod
+    def _extract_title(body: str) -> str:
+        m = re.search(r"<title>([^<]+)</title>", body, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    def _extract_price(self, body: str) -> str:
+        m = self._PRICE_PATTERN.search(body)
+        return f"£{m.group(1)}" if m else ""
+
+
+# Registry of available monitors keyed by site name.
+MONITOR_REGISTRY: dict[str, type[BaseMonitor]] = {
+    "pokemoncenter": PokemonCenterMonitor,
+    "smythstoys": SmythsToysMonitor,
+    "generic": GenericMonitor,
+}
+
+
+def get_monitor(site: str) -> BaseMonitor:
+    """Return an instantiated monitor for the given site name."""
+    cls = MONITOR_REGISTRY.get(site, GenericMonitor)
+    return cls()
